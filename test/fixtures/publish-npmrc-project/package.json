@@ -1,0 +1,8 @@
+{
+  "name": "publish-npmrc-project",
+  "version": "1.0.0",
+  "repository": "https://github.com/example/publish-npmrc-project.git",
+  "publishConfig": {
+    "provenance": true
+  }
+}

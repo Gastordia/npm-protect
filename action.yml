@@ -1,0 +1,79 @@
+name: npm-protect
+description: Run npm-protect in GitHub Actions
+
+inputs:
+  command:
+    description: npm-protect command to run
+    default: review
+  project:
+    description: Project directory to inspect
+    required: false
+  config:
+    description: Optional config path
+    required: false
+  before:
+    description: Path for diff before snapshot
+    required: false
+  after:
+    description: Path for diff after snapshot
+    required: false
+  before-ref:
+    description: Git ref for diff before snapshot
+    required: false
+  after-ref:
+    description: Git ref for diff after snapshot
+    required: false
+  lockfile-path:
+    description: Override lockfile path when diffing git refs
+    required: false
+  format:
+    description: Main output format
+    default: json
+  output:
+    description: Explicit output file path
+    required: false
+  online:
+    description: Enable external intelligence collectors
+    default: "false"
+  inspect-tarballs:
+    description: Inspect published tarballs for suspicious lifecycle behavior
+    default: "false"
+  audit-signatures:
+    description: Run npm audit signatures with attestations
+    default: "false"
+  cache-dir:
+    description: Cache directory for remote review data
+    required: false
+  cache-ttl-hours:
+    description: Cache TTL in hours
+    required: false
+  osv-url:
+    description: Override OSV endpoint
+    required: false
+  registry-url:
+    description: Override registry base URL
+    required: false
+  write-summary:
+    description: Append a markdown summary to the GitHub step summary when supported
+    default: "true"
+  annotate-findings:
+    description: Emit GitHub workflow annotations for supported commands
+    default: "true"
+
+outputs:
+  command:
+    description: Command that ran
+  format:
+    description: Main output format
+  result_path:
+    description: Path to the main output file
+  summary_path:
+    description: Path to the markdown summary file when generated
+  annotation_count:
+    description: Number of GitHub annotations emitted
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: node "${{ github.action_path }}/scripts/github-action.js"

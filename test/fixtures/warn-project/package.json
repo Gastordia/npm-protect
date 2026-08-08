@@ -1,0 +1,9 @@
+{
+  "name": "warn-project",
+  "version": "1.0.0",
+  "repository": "https://example.com/warn-project.git",
+  "dependencies": {
+    "expres": "1.0.0",
+    "git-only": "git+https://example.com/git-only.git"
+  }
+}

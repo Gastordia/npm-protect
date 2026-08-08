@@ -1,0 +1,8 @@
+{
+  "name": "block-project",
+  "version": "1.0.0",
+  "repository": "https://example.com/block-project.git",
+  "dependencies": {
+    "esbuild": "0.25.0"
+  }
+}

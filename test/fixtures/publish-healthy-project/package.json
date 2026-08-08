@@ -1,0 +1,8 @@
+{
+  "name": "publish-healthy-project",
+  "version": "1.0.0",
+  "repository": "https://github.com/example/publish-healthy-project.git",
+  "publishConfig": {
+    "provenance": true
+  }
+}
