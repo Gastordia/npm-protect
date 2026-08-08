@@ -4,6 +4,7 @@ import { runPolicyCommand } from "./commands/policy.js";
 import { runPublishCheckCommand } from "./commands/publish-check.js";
 import { runReviewCommand } from "./commands/review.js";
 import { runSbomCommand } from "./commands/sbom.js";
+import { runServiceCommand } from "./commands/service.js";
 import { runVerifyCommand } from "./commands/verify.js";
 
 const HELP_TEXT = `npm-protect
@@ -18,6 +19,7 @@ Commands:
   install          Print a safer install plan
   publish-check    Check local publisher posture signals
   sbom             Export a CycloneDX SBOM from the local npm snapshot
+  service          Install or run the always-on npm protection shim
   policy init      Write a sample npm-protect.yml
   policy validate  Validate config or defaults
 
@@ -81,6 +83,12 @@ export async function runCli(argv, options = {}) {
   if (command === "policy") {
     const [subcommand, ...policyArgs] = rest;
     await runPolicyCommand(subcommand, parseArgs(policyArgs));
+    return;
+  }
+
+  if (command === "service") {
+    const [subcommand, ...serviceArgs] = rest;
+    await runServiceCommand(subcommand, serviceArgs, options);
     return;
   }
 

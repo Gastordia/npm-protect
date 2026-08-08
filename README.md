@@ -69,6 +69,7 @@ that support markdown, appends a summary to the GitHub step summary. For `review
 - `verify`: alias of `review` with the same current behavior
 - `diff`: compare two project snapshots, lockfiles, or git refs
 - `install`: print a safer install plan based on policy and optional tarball evidence
+- `service`: install an always-on `npm` shim that mediates install commands
 - `publish-check`: inspect local publisher posture signals
 - `sbom`: export a CycloneDX JSON SBOM for the local npm snapshot
 - `policy init`: create a sample `npm-protect.yml`
@@ -92,6 +93,39 @@ that support markdown, appends a summary to the GitHub step summary. For `review
 - `--output <path>` to write plans to disk
 
 `sbom` emits CycloneDX JSON by default and also supports `--output <path>`.
+
+## Always-On Protection
+
+`npm-protect` can run in two modes:
+
+- manual CLI review, where you call `review`, `diff`, or `install` yourself
+- always-on protection, where it installs an `npm` shim ahead of the real `npm` binary in your `PATH`
+
+Install the shim with:
+
+```bash
+node ./bin/npm-protect.js service install
+node ./bin/npm-protect.js service status
+npm run service:install
+npm run service:status
+```
+
+When the shim is active, `npm-protect` intercepts `npm install`, `npm i`, `npm ci`,
+`npm add`, and `npm update`.
+
+For dependency-changing installs, it:
+
+1. Resolves the requested dependency change with `--package-lock-only --ignore-scripts`
+2. Reviews the resulting dependency state with online registry checks and tarball inspection
+3. Restores the original `package.json` and lockfile if the review blocks the change
+4. Runs the real install with `--ignore-scripts` when the dependency state is allowed
+5. Rebuilds only explicitly approved install-script packages
+
+For `npm ci`, it reviews the existing lockfile first, then installs with `--ignore-scripts`,
+then rebuilds only approved packages.
+
+The guard also blocks unmanaged global installs (`npm install -g`) by default, because they
+cannot be reviewed safely with the current project-based model.
 
 ## Review Semantics
 
@@ -256,6 +290,7 @@ Coverage currently includes:
 ## Current Limitations
 
 - npm ecosystem only
+- always-on mode currently intercepts `npm` install flows, not `npx`, `pnpm`, or `yarn`
 - npm provenance verification depends on `node_modules`, network access for `npm audit signatures`, and npm CLI support
 - tarball inspection currently prioritizes direct registry dependencies and packages already marked with install-time lifecycle hooks in the lockfile; it does not fetch every transitive tarball
 - publisher workflow checks are text heuristics, not full YAML semantic parsing
