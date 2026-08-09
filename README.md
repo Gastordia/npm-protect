@@ -241,9 +241,10 @@ the path that protects against accidental or automated unsafe installs, includin
 initiated by an LLM or local scripting tool.
 
 When the activation script is loaded, the guard also intercepts absolute package-manager
-invocations spawned by Node-based tools. That closes a major wrapper-bypass path where a
-local agent or helper process would otherwise call something like `/usr/bin/npm install`
-directly instead of resolving `npm` through `PATH`.
+invocations spawned by Node-based tools through `spawn`, `exec`, or `execFile` and their
+synchronous variants. That closes a major wrapper-bypass path where a local agent or helper
+process would otherwise call something like `/usr/bin/npm install` directly instead of
+resolving `npm` through `PATH`.
 
 For dependency-changing installs, it:
 

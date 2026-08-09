@@ -374,6 +374,8 @@ if (forceWrappers && serviceBinDir && process.env.NPM_PROTECT_BYPASS_HOOK !== "1
   );
   const originalSpawn = childProcess.spawn;
   const originalSpawnSync = childProcess.spawnSync;
+  const originalExec = childProcess.exec;
+  const originalExecSync = childProcess.execSync;
   const originalExecFile = childProcess.execFile;
   const originalExecFileSync = childProcess.execFileSync;
 
@@ -383,6 +385,14 @@ if (forceWrappers && serviceBinDir && process.env.NPM_PROTECT_BYPASS_HOOK !== "1
 
   childProcess.spawnSync = function patchedSpawnSync(file, args, options) {
     return originalSpawnSync.call(this, rewriteManagedTool(file, options), args, options);
+  };
+
+  childProcess.exec = function patchedExec(command, ...rest) {
+    return originalExec.call(this, rewriteManagedShellCommand(command, extractExecOptions(rest)), ...rest);
+  };
+
+  childProcess.execSync = function patchedExecSync(command, options) {
+    return originalExecSync.call(this, rewriteManagedShellCommand(command, options), options);
   };
 
   childProcess.execFile = function patchedExecFile(file, ...rest) {
@@ -418,6 +428,46 @@ if (forceWrappers && serviceBinDir && process.env.NPM_PROTECT_BYPASS_HOOK !== "1
     }
 
     return wrapperPath;
+  }
+
+  function rewriteManagedShellCommand(command, options) {
+    if (
+      typeof command !== "string" ||
+      process.env.NPM_PROTECT_BYPASS_HOOK === "1" ||
+      options?.env?.NPM_PROTECT_BYPASS_HOOK === "1"
+    ) {
+      return command;
+    }
+
+    return command.replace(
+      /(^|(?:&&|\\|\\||[;|])\\s*)(?:"([^"]+)"|'([^']+)'|([^\\s;&|]+))/gu,
+      (match, boundary, doubleQuoted, singleQuoted, bare) => {
+        const executable = doubleQuoted ?? singleQuoted ?? bare;
+        if (!path.isAbsolute(executable)) {
+          return match;
+        }
+
+        const toolName = path.basename(executable);
+        const wrapperPath = wrapperPaths.get(toolName);
+        if (!managedTools.has(toolName) || !wrapperPath || !fs.existsSync(wrapperPath)) {
+          return match;
+        }
+
+        if (path.resolve(executable) === wrapperPath) {
+          return match;
+        }
+
+        return boundary + quoteShellWord(wrapperPath);
+      },
+    );
+  }
+
+  function quoteShellWord(value) {
+    return "'" + String(value).replace(/'/g, "'\\\"'\\\"'") + "'";
+  }
+
+  function extractExecOptions(rest) {
+    return isOptionsObject(rest[0]) ? rest[0] : undefined;
   }
 
   function extractOptions(rest) {

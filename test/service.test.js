@@ -137,6 +137,8 @@ test("installProtectionService activation hook rewrites absolute npm invocations
     const originals = {
       spawn: childProcess.spawn,
       spawnSync: childProcess.spawnSync,
+      exec: childProcess.exec,
+      execSync: childProcess.execSync,
       execFile: childProcess.execFile,
       execFileSync: childProcess.execFileSync,
     };
@@ -150,6 +152,10 @@ test("installProtectionService activation hook rewrites absolute npm invocations
       payload.args = args;
       return Buffer.from(JSON.stringify(payload));
     };
+    childProcess.execSync = (command) => {
+      payload.command = command;
+      return Buffer.from(command);
+    };
 
     delete require.cache[installResult.nodeHookPath];
     require(installResult.nodeHookPath);
@@ -157,6 +163,13 @@ test("installProtectionService activation hook rewrites absolute npm invocations
 
     assert.equal(payload.file, installResult.wrapperPath);
     assert.deepEqual(payload.args, ["--version"]);
+
+    childProcess.execSync(`/usr/bin/npm install && /usr/bin/npm audit`, { encoding: "utf8" });
+    assert.equal(payload.command.includes("/usr/bin/npm"), false);
+    assert.equal(
+      payload.command,
+      `'${installResult.wrapperPath}' install && '${installResult.wrapperPath}' audit`,
+    );
 
     Object.assign(childProcess, originals);
     restoreProcessEnv(originalEnv);
