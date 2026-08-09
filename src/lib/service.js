@@ -17,7 +17,7 @@ const NPM_INSTALL_COMMANDS = new Set(["install", "i", "ci", "add", "update", "up
 const PNPM_MUTATING_COMMANDS = new Set(["add", "install", "i", "update", "up", "upgrade"]);
 const YARN_MUTATING_COMMANDS = new Set(["add", "install", "up", "upgrade"]);
 const WRAPPED_TOOLS = ["npm", "npx", "pnpm", "pnpx", "yarn", "yarnpkg"];
-const SNAPSHOT_FILENAMES = ["package.json", "package-lock.json", "npm-shrinkwrap.json"];
+const SNAPSHOT_FILENAMES = ["package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml"];
 const DEFAULT_SERVICE_FLAGS = {
   online: true,
   "inspect-tarballs": true,
@@ -239,7 +239,7 @@ export async function runProtectedPackageManagerCommand(toolName, argv, options 
     return passThroughCommand(realToolPath, args, { cwd, env: toolEnv }, runner);
   }
 
-  return runProtectedNpmInstall(args, {
+  return runProtectedManagedInstall(toolName, args, {
     cwd,
     realToolPath,
     fetchImpl: options.fetchImpl,
@@ -258,7 +258,8 @@ exec ${quoteForShell(nodePath)} ${quoteForShell(cliPath)} service run --tool ${q
 `;
 }
 
-async function runProtectedNpmInstall(
+async function runProtectedManagedInstall(
+  toolName,
   args,
   {
     cwd,
@@ -271,7 +272,7 @@ async function runProtectedNpmInstall(
   },
 ) {
   const command = args[0];
-  const projectDir = resolveProjectDirFromNpmArgs(cwd, args);
+  const projectDir = resolveProjectDirFromPackageManagerArgs(toolName, cwd, args);
 
   if (!command) {
     return passThroughCommand(realToolPath, args, { cwd, env }, runner);
@@ -279,15 +280,15 @@ async function runProtectedNpmInstall(
 
   if (hasGlobalInstallFlag(args)) {
     console.error(
-      "npm-protect blocked this command: global npm installs are not supported by the protection shim yet.",
+      `npm-protect blocked this command: global ${toolName} installs are not supported by the protection shim yet.`,
     );
     return { exitCode: 2, blocked: true };
   }
 
   const snapshots = await snapshotProjectFiles(projectDir);
 
-  if (command !== "ci") {
-    const previewResult = await runner(realToolPath, buildPreviewArgs(args), {
+  if (!shouldSkipPreview(toolName, command)) {
+    const previewResult = await runner(realToolPath, buildPreviewArgs(toolName, args), {
       cwd: projectDir,
       env,
       stdio: "inherit",
@@ -322,7 +323,7 @@ async function runProtectedNpmInstall(
 
     if (report.riskVerdict === "block") {
       await restoreProjectFiles(projectDir, snapshots);
-      printBlockingFindings(report, "install", projectDir);
+      printBlockingFindings(report, `${toolName} install`, projectDir);
       return {
         exitCode: 2,
         blocked: true,
@@ -540,7 +541,7 @@ function classifyPnpmInvocation(args) {
   }
 
   if (PNPM_MUTATING_COMMANDS.has(command)) {
-    return unsupportedManagerBlock("pnpm", command);
+    return { kind: "pnpm-install" };
   }
 
   return { kind: "pass-through" };
@@ -658,7 +659,7 @@ function unsupportedManagerBlock(toolName, command) {
   return {
     kind: "block",
     reason: "unsupported_manager_install",
-    message: `npm-protect blocked this command: ${toolName} ${command} changes dependencies, but always-on lockfile-accurate mediation is only implemented for npm right now.`,
+    message: `npm-protect blocked this command: ${toolName} ${command} changes dependencies, but always-on lockfile-accurate mediation is only implemented for npm and pnpm right now.`,
   };
 }
 
@@ -670,11 +671,12 @@ function ensureIgnoreScripts(args) {
   return insertFlagBeforeDoubleDash(args, "--ignore-scripts");
 }
 
-function buildPreviewArgs(args) {
+function buildPreviewArgs(toolName, args) {
   const previewArgs = ensureIgnoreScripts(args);
+  const previewFlag = toolName === "pnpm" ? "--lockfile-only" : "--package-lock-only";
 
-  if (!previewArgs.includes("--package-lock-only")) {
-    return insertFlagBeforeDoubleDash(previewArgs, "--package-lock-only");
+  if (!previewArgs.includes(previewFlag)) {
+    return insertFlagBeforeDoubleDash(previewArgs, previewFlag);
   }
 
   return previewArgs;
@@ -697,7 +699,7 @@ function hasGlobalInstallFlag(args) {
   return args.includes("-g") || args.includes("--global");
 }
 
-function resolveProjectDirFromNpmArgs(fallbackDir, args) {
+function resolveProjectDirFromPackageManagerArgs(toolName, fallbackDir, args) {
   const prefixIndex = args.findIndex((arg) => arg === "--prefix");
   if (prefixIndex !== -1 && typeof args[prefixIndex + 1] === "string") {
     return path.resolve(args[prefixIndex + 1]);
@@ -708,7 +710,23 @@ function resolveProjectDirFromNpmArgs(fallbackDir, args) {
     return path.resolve(inlinePrefix.split("=", 2)[1]);
   }
 
+  if (toolName === "pnpm") {
+    const dirIndex = args.findIndex((arg) => arg === "--dir" || arg === "-C");
+    if (dirIndex !== -1 && typeof args[dirIndex + 1] === "string") {
+      return path.resolve(args[dirIndex + 1]);
+    }
+
+    const inlineDir = args.find((arg) => arg.startsWith("--dir="));
+    if (inlineDir) {
+      return path.resolve(inlineDir.split("=", 2)[1]);
+    }
+  }
+
   return fallbackDir;
+}
+
+function shouldSkipPreview(toolName, command) {
+  return toolName === "npm" && command === "ci";
 }
 
 async function resolveRealExecutable(name, deps = {}, options = {}) {

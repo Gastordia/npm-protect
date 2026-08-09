@@ -55,7 +55,7 @@ export function evaluateProjectWithIntelligence(project, config, options = {}) {
     findings.push({
       severity: config.blockRules.requireLockfile ? "error" : "warn",
       code: "missing_lockfile",
-      message: "No npm lockfile was found in the project root",
+      message: "No supported package-manager lockfile was found in the project root",
     });
   }
 

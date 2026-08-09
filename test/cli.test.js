@@ -266,6 +266,25 @@ test("runCli review warns on freshly published direct dependencies from registry
   }
 });
 
+test("runCli review supports pnpm lockfiles", async () => {
+  const { output, exitCode } = await captureRun(async () => {
+    await runCli([
+      "review",
+      "--project",
+      path.join(fixturesDir, "pnpm-project"),
+      "--json",
+    ]);
+  });
+
+  const report = JSON.parse(output);
+  assert.equal(report.project.lockfilePath.endsWith("pnpm-lock.yaml"), true);
+  assert.equal(report.stats.totalPackages, 2);
+  assert.equal(report.stats.packagesWithInstallScripts, 1);
+  assert.equal(report.riskVerdict, "block");
+  assert.equal(report.verdict, "warn");
+  assert.equal(exitCode, undefined);
+});
+
 test("runCli review supports SARIF output", async () => {
   const { output, exitCode } = await captureRun(async () => {
     await runCli([

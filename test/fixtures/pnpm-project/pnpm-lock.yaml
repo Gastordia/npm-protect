@@ -1,0 +1,23 @@
+lockfileVersion: '9.0'
+
+importers:
+  .:
+    dependencies:
+      esbuild:
+        specifier: 0.25.0
+        version: 0.25.0
+      react:
+        specifier: 19.0.0
+        version: 19.0.0
+
+packages:
+  esbuild@0.25.0:
+    resolution:
+      integrity: sha512-esbuild
+      tarball: https://registry.npmjs.org/esbuild/-/esbuild-0.25.0.tgz
+    requiresBuild: true
+
+  react@19.0.0:
+    resolution:
+      integrity: sha512-react
+      tarball: https://registry.npmjs.org/react/-/react-19.0.0.tgz

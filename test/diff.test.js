@@ -182,3 +182,59 @@ test("loadGitRefSnapshot reads lockfiles from git refs", async () => {
   assert.ok(report.added.includes("esbuild@0.25.0"));
   assert.ok(report.removed.includes("react@19.0.0"));
 });
+
+test("loadGitRefSnapshot also reads pnpm lockfiles from git refs", async () => {
+  const refs = {
+    refA: {
+      "pnpm-lock.yaml": `
+lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      react:
+        specifier: 19.0.0
+        version: 19.0.0
+packages:
+  react@19.0.0:
+    resolution:
+      integrity: sha512-react
+`,
+    },
+    refB: {
+      "pnpm-lock.yaml": `
+lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      esbuild:
+        specifier: 0.25.0
+        version: 0.25.0
+packages:
+  esbuild@0.25.0:
+    resolution:
+      integrity: sha512-esbuild
+    requiresBuild: true
+`,
+    },
+  };
+
+  const readGitFile = async (_repoDir, ref, filePath) => {
+    const content = refs[ref]?.[filePath];
+    if (!content) {
+      throw new Error(`git path "${filePath}" was not found in ref "${ref}"`);
+    }
+    return content;
+  };
+
+  const before = await loadGitRefSnapshot("/tmp/demo-repo", "refA", null, {
+    readGitFile,
+  });
+  const after = await loadGitRefSnapshot("/tmp/demo-repo", "refB", null, {
+    readGitFile,
+  });
+  const report = diffSnapshots(before, after);
+
+  assert.equal(report.verdict, "block");
+  assert.ok(report.added.includes("esbuild@0.25.0"));
+  assert.ok(report.removed.includes("react@19.0.0"));
+});

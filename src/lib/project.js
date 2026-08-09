@@ -3,7 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { parseLockfile } from "./lockfile.js";
+import { parseLockfileContent } from "./lockfile.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,7 +20,7 @@ export async function loadProjectSnapshot(projectDir) {
   const dependencyNames = collectDependencyNames(manifest);
   const lockfile = lockfilePath
     ? annotateLockfile(
-        parseLockfile(JSON.parse(await readFile(lockfilePath, "utf8"))),
+        parseLockfileContent(lockfilePath, await readFile(lockfilePath, "utf8")),
         dependencyNames,
       )
     : null;
@@ -43,11 +43,10 @@ export async function loadProjectSnapshot(projectDir) {
 export async function loadSnapshotTarget(targetPath) {
   const resolvedPath = path.resolve(targetPath);
 
-  if (resolvedPath.endsWith(".json")) {
-    const parsed = JSON.parse(await readFile(resolvedPath, "utf8"));
+  if (isDirectLockfilePath(resolvedPath)) {
     return {
       label: resolvedPath,
-      packages: parseLockfile(parsed).packages,
+      packages: parseLockfileContent(resolvedPath, await readFile(resolvedPath, "utf8")).packages,
     };
   }
 
@@ -65,13 +64,13 @@ export async function loadGitRefSnapshot(repoDir, ref, lockfilePath = null, opti
     lockfilePath ?? (await findGitLockfilePath(resolvedRepo, ref, readGitFileImpl));
 
   if (!relativeLockfilePath) {
-    throw new Error(`no npm lockfile was found in git ref "${ref}" under ${resolvedRepo}`);
+    throw new Error(`no supported package manager lockfile was found in git ref "${ref}" under ${resolvedRepo}`);
   }
 
   const content = await readGitFileImpl(resolvedRepo, ref, relativeLockfilePath);
   return {
     label: `${resolvedRepo}@${ref}:${relativeLockfilePath}`,
-    packages: parseLockfile(JSON.parse(content)).packages,
+    packages: parseLockfileContent(relativeLockfilePath, content).packages,
   };
 }
 
@@ -183,7 +182,7 @@ export async function fileExists(filePath) {
 }
 
 async function findLockfilePath(projectDir) {
-  for (const name of ["package-lock.json", "npm-shrinkwrap.json"]) {
+  for (const name of ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml"]) {
     const candidate = path.join(projectDir, name);
     if (await fileExists(candidate)) {
       return candidate;
@@ -194,7 +193,7 @@ async function findLockfilePath(projectDir) {
 }
 
 async function findGitLockfilePath(repoDir, ref, readGitFileImpl) {
-  for (const name of ["package-lock.json", "npm-shrinkwrap.json"]) {
+  for (const name of ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml"]) {
     try {
       await readGitFileImpl(repoDir, ref, name);
       return name;
@@ -341,6 +340,7 @@ function sameSet(left, right) {
 
 function annotateLockfile(lockfile, dependencyNames) {
   const dependencySet = new Set(dependencyNames);
+  const directDependencyKeys = new Set(lockfile.directDependencyKeys ?? []);
 
   return {
     ...lockfile,
@@ -349,7 +349,10 @@ function annotateLockfile(lockfile, dependencyNames) {
       return {
         ...pkg,
         isTopLevel,
-        isDirectDependency: isTopLevel && dependencySet.has(pkg.name),
+        isDirectDependency:
+          directDependencyKeys.size > 0
+            ? directDependencyKeys.has(pkg.rawKey ?? `${pkg.name}@${pkg.version}`)
+            : isTopLevel && dependencySet.has(pkg.name),
       };
     }),
   };
@@ -385,4 +388,8 @@ function isRegistryDependencySpec(spec) {
   ];
 
   return !nonRegistryPrefixes.some((prefix) => spec.startsWith(prefix));
+}
+
+function isDirectLockfilePath(targetPath) {
+  return /\.(?:json|ya?ml)$/iu.test(targetPath) && /(?:package-lock|npm-shrinkwrap|pnpm-lock)\./iu.test(targetPath);
 }

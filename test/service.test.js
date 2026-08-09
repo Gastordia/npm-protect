@@ -241,24 +241,89 @@ test("runProtectedPackageManagerCommand passes through local-only npx execution"
   assert.deepEqual(calls, [["--no-install", "eslint", "--version"]]);
 });
 
-test("runProtectedPackageManagerCommand blocks unsupported mutating pnpm installs", async () => {
-  const result = await runProtectedPackageManagerCommand(
-    "pnpm",
-    ["add", "left-pad@1.3.0"],
-    {
-      cwd: process.cwd(),
-      realToolPath: "/usr/bin/pnpm",
-    },
-    {
-      runProcess: async () => {
-        throw new Error("pnpm add should be blocked before execution");
-      },
-    },
-  );
+test("runProtectedPackageManagerCommand reviews pnpm add with a lockfile-only preview", async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), "npm-protect-pnpm-block-"));
+  const calls = [];
 
-  assert.equal(result.exitCode, 2);
-  assert.equal(result.blocked, true);
-  assert.equal(result.reason, "unsupported_manager_install");
+  try {
+    await cp(path.join(fixturesDir, "pnpm-project"), projectDir, { recursive: true });
+
+    const result = await runProtectedPackageManagerCommand(
+      "pnpm",
+      ["add", "left-pad@1.3.0"],
+      {
+        cwd: projectDir,
+        realToolPath: "/usr/bin/pnpm",
+        fetchImpl: async () => {
+          throw new Error("offline");
+        },
+      },
+      {
+        runProcess: async (_file, args) => {
+          calls.push(args);
+          if (args.includes("--lockfile-only")) {
+            return { exitCode: 0 };
+          }
+
+          throw new Error("pnpm add should not proceed after a blocked review");
+        },
+      },
+    );
+
+    assert.equal(result.exitCode, 2);
+    assert.equal(result.blocked, true);
+    assert.deepEqual(calls, [["add", "left-pad@1.3.0", "--ignore-scripts", "--lockfile-only"]]);
+  } finally {
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("runProtectedPackageManagerCommand mediates pnpm installs with lockfile-only preview", async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), "npm-protect-pnpm-allow-"));
+  const configPath = path.join(projectDir, "npm-protect.json");
+
+  try {
+    await cp(path.join(fixturesDir, "pnpm-project"), projectDir, { recursive: true });
+    await writeFile(
+      configPath,
+      JSON.stringify(
+        {
+          allowedInstallScripts: ["esbuild@0.25.0"],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const calls = [];
+    const result = await runProtectedPackageManagerCommand(
+      "pnpm",
+      ["install"],
+      {
+        cwd: projectDir,
+        realToolPath: "/usr/bin/pnpm",
+        fetchImpl: async () => {
+          throw new Error("offline");
+        },
+      },
+      {
+        runProcess: async (_file, args) => {
+          calls.push(args);
+          return { exitCode: 0 };
+        },
+      },
+    );
+
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(calls, [
+      ["install", "--ignore-scripts", "--lockfile-only"],
+      ["install", "--ignore-scripts"],
+      ["rebuild", "esbuild"],
+    ]);
+  } finally {
+    await rm(projectDir, { recursive: true, force: true });
+  }
 });
 
 test("installProtectionService refuses to overwrite an unmanaged wrapper", async () => {
