@@ -4,6 +4,14 @@
   "description": "Dependency firewall for npm supply-chain review",
   "type": "module",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Gastordia/npm-protect.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Gastordia/npm-protect/issues"
+  },
+  "homepage": "https://github.com/Gastordia/npm-protect#readme",
   "bin": {
     "npm-protect": "./bin/npm-protect.js",
     "npm-scan": "./bin/npm-scan.js"

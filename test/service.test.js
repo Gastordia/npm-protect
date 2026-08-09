@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,28 +8,33 @@ import { runCli } from "../src/cli.js";
 import {
   getProtectionServiceStatus,
   installProtectionService,
+  runProtectedPackageManagerCommand,
   runProtectedNpmCommand,
 } from "../src/lib/service.js";
 
 const fixturesDir = path.join(process.cwd(), "test", "fixtures");
 
-test("installProtectionService writes an npm wrapper and reports active status", async () => {
+test("installProtectionService writes managed wrappers and reports active status", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "npm-protect-service-"));
   const binDir = path.join(tempDir, "bin");
 
   try {
     const installResult = await installProtectionService({
       binDir,
-      realNpmPath: "/usr/bin/npm",
       cliPath: "/opt/npm-protect/bin/npm-protect.js",
       nodePath: "/usr/bin/node",
       pathValue: `${binDir}${path.delimiter}/usr/bin`,
+      toolNames: ["npm", "npx", "pnpm"],
     });
 
     const wrapper = await readFile(installResult.wrapperPath, "utf8");
-    assert.match(wrapper, /NPM_PROTECT_REAL_NPM/);
+    assert.match(wrapper, /NPM_PROTECT_TOOL='npm'/);
     assert.match(wrapper, /service run/);
     assert.match(wrapper, /\/opt\/npm-protect\/bin\/npm-protect\.js/);
+    assert.deepEqual(
+      installResult.wrappers.map((wrapperEntry) => wrapperEntry.name),
+      ["npm", "npx", "pnpm"],
+    );
 
     const status = await getProtectionServiceStatus(
       {
@@ -38,12 +43,18 @@ test("installProtectionService writes an npm wrapper and reports active status",
       },
       {
         currentNpmPath: installResult.wrapperPath,
+        currentExecutablePaths: {
+          npm: installResult.wrapperPath,
+          npx: path.join(binDir, "npx"),
+          pnpm: "/usr/bin/pnpm",
+        },
       },
     );
 
     assert.equal(status.wrapperExists, true);
     assert.equal(status.active, true);
     assert.equal(status.pathActive, true);
+    assert.equal(status.wrappers.find((wrapperEntry) => wrapperEntry.name === "npx")?.active, true);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -168,6 +179,111 @@ test("runProtectedNpmCommand blocks unmanaged global installs", async () => {
   assert.equal(result.blocked, true);
 });
 
+test("runProtectedPackageManagerCommand blocks unsafe npx package execution before it runs", async () => {
+  const blockedManifest = await readFile(
+    path.join(fixturesDir, "block-project", "package.json"),
+    "utf8",
+  );
+  const blockedLockfile = await readFile(
+    path.join(fixturesDir, "block-project", "package-lock.json"),
+    "utf8",
+  );
+  const calls = [];
+
+  const result = await runProtectedPackageManagerCommand(
+    "npx",
+    ["esbuild@0.25.0"],
+    {
+      cwd: process.cwd(),
+      realToolPath: "/usr/bin/npx",
+      realNpmPath: "/usr/bin/npm",
+      fetchImpl: async () => {
+        throw new Error("offline");
+      },
+    },
+    {
+      runProcess: async (_file, args, runOptions) => {
+        calls.push(args);
+        if (args[0] === "install" && args.includes("--package-lock-only")) {
+          await writeFile(path.join(runOptions.cwd, "package.json"), blockedManifest, "utf8");
+          await writeFile(path.join(runOptions.cwd, "package-lock.json"), blockedLockfile, "utf8");
+          return { exitCode: 0 };
+        }
+
+        throw new Error("npx should not execute after a blocked preflight review");
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, 2);
+  assert.equal(result.blocked, true);
+  assert.deepEqual(calls, [["install", "--package-lock-only", "--ignore-scripts", "esbuild@0.25.0"]]);
+});
+
+test("runProtectedPackageManagerCommand passes through local-only npx execution", async () => {
+  const calls = [];
+  const result = await runProtectedPackageManagerCommand(
+    "npx",
+    ["--no-install", "eslint", "--version"],
+    {
+      cwd: process.cwd(),
+      realToolPath: "/usr/bin/npx",
+    },
+    {
+      runProcess: async (_file, args) => {
+        calls.push(args);
+        return { exitCode: 0 };
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(calls, [["--no-install", "eslint", "--version"]]);
+});
+
+test("runProtectedPackageManagerCommand blocks unsupported mutating pnpm installs", async () => {
+  const result = await runProtectedPackageManagerCommand(
+    "pnpm",
+    ["add", "left-pad@1.3.0"],
+    {
+      cwd: process.cwd(),
+      realToolPath: "/usr/bin/pnpm",
+    },
+    {
+      runProcess: async () => {
+        throw new Error("pnpm add should be blocked before execution");
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, 2);
+  assert.equal(result.blocked, true);
+  assert.equal(result.reason, "unsupported_manager_install");
+});
+
+test("installProtectionService refuses to overwrite an unmanaged wrapper", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "npm-protect-service-overwrite-"));
+  const binDir = path.join(tempDir, "bin");
+
+  try {
+    await mkdir(binDir, { recursive: true });
+    await writeFile(path.join(binDir, "npm"), "#!/usr/bin/env sh\nexec /usr/bin/npm \"$@\"\n", "utf8");
+
+    await assert.rejects(
+      () =>
+        installProtectionService({
+          binDir,
+          cliPath: "/opt/npm-protect/bin/npm-protect.js",
+          nodePath: "/usr/bin/node",
+          toolNames: ["npm"],
+        }),
+      /refusing to overwrite/u,
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("runCli service install emits JSON metadata for wrapper installation", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "npm-protect-service-cli-"));
   const binDir = path.join(tempDir, "bin");
@@ -179,8 +295,6 @@ test("runCli service install emits JSON metadata for wrapper installation", asyn
         "install",
         "--bin-dir",
         binDir,
-        "--real-npm",
-        "/usr/bin/npm",
         "--cli-path",
         "/opt/npm-protect/bin/npm-protect.js",
         "--node-path",
@@ -193,7 +307,8 @@ test("runCli service install emits JSON metadata for wrapper installation", asyn
 
     const result = JSON.parse(output);
     assert.equal(result.wrapperPath, path.join(binDir, "npm"));
-    assert.equal(result.realNpmPath, "/usr/bin/npm");
+    assert.ok(Array.isArray(result.wrappers));
+    assert.ok(result.wrappers.some((wrapperEntry) => wrapperEntry.name === "npx"));
     assert.equal(exitCode, undefined);
   } finally {
     await rm(tempDir, { recursive: true, force: true });

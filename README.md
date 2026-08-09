@@ -1,30 +1,106 @@
 # npm-protect
 
-`npm-protect` is a local-first dependency firewall for npm projects.
+`npm-protect` is a local-first dependency firewall for npm projects. It is built to reduce
+the chance that a malicious, hijacked, or simply unsafe package install turns into code
+execution on a Linux workstation, CI runner, or developer shell.
 
-The current repository implements the first useful slice:
+It can run in two modes:
+
+- manual review, where you explicitly run `review`, `diff`, or `install`
+- always-on protection, where `npm-protect` installs package-manager wrappers and mediates risky commands automatically
+
+The always-on mode is meant to stay in front of the real package-manager binaries, so even if
+an LLM, script, or helper tool tries to run `npm install`, `npx`, `pnpm dlx`, or `yarn dlx`,
+the package request is still intercepted before unsafe code is allowed to run.
+
+## What It Protects From
+
+`npm-protect` focuses on supply-chain and install-time risk. Its current coverage is aimed at:
+
+- install-time malware hidden in `preinstall`, `install`, `postinstall`, or `prepare`
+- typosquatted direct dependencies that are easy to mistake for trusted packages
+- direct `git+`, `http(s)`, or `file:` dependencies that bypass normal registry trust signals
+- newly published packages or versions that are too fresh to trust by default
+- same-version artifact drift, where a package tarball or integrity hash changes unexpectedly
+- known vulnerable dependencies reported through OSV
+- missing or invalid npm registry signatures and provenance attestations
+- suspicious published tarballs that look like droppers, credential grabbers, or install-time loaders
+- one-off remote package execution through `npx`, `npm exec`, `npm create`, `pnpm dlx`, or `yarn dlx`
+- unsafe global installs performed outside a project review context
+
+## Attack Coverage And Mitigations
+
+| Attack type | Typical attacker move | What `npm-protect` does | Mitigation technique |
+| --- | --- | --- | --- |
+| Lifecycle-script malware | Hide payloads in `preinstall` or `postinstall` | Blocks unapproved install-script packages and never runs install scripts during the first install pass | Forces `--ignore-scripts`, recovers hidden lifecycle hooks from tarballs, then rebuilds only allowlisted packages |
+| Typosquatting | Publish a lookalike package name | Warns or blocks suspicious direct dependency names | Direct-dependency similarity heuristics with configurable thresholds |
+| Non-registry dependency smuggling | Use `git+`, tarball URLs, or local file specs | Flags direct dependencies that bypass registry review signals | Direct specifier classification and policy enforcement |
+| Fresh-package hijacks | Publish a malicious version minutes before install | Warns on very new packages and can enforce minimum package age | Registry publish-date checks with `warnPackageAgeDays` and `minPackageAgeDays` |
+| Same-version artifact drift | Change tarball content without changing the semver version | Blocks integrity drift and reports artifact URL drift | Lockfile integrity comparison, registry `dist.integrity` verification, and before/after diffing |
+| Known vulnerable dependencies | Pull in a package with a public security advisory | Warns or blocks based on policy severity | OSV batch lookup against resolved dependencies |
+| Missing signatures or provenance | Publish unsigned or unattested releases | Warns or blocks when registry signature or attestation evidence is missing or invalid | Registry metadata verification plus optional `npm audit signatures --include-attestations` |
+| Hidden tarball behavior | Ship downloader, eval, child-process, or network logic in published files | Surfaces suspicious packages even when the lockfile metadata looks normal | Tarball inspection for downloader, inline-eval, environment-access, child-process, and network-use indicators |
+| One-off package execution | Use `npx`, `npm exec`, `pnpm dlx`, or `yarn dlx` to fetch and run a package immediately | Reviews the requested package spec in a temporary project before execution | Preflight lockfile resolution with `--ignore-scripts`, then the normal review pipeline |
+| Unsafe automation installs | Let an agent run `npm install` blindly | Intercepts package-changing npm commands and reviews the resulting dependency state first | Always-on wrapper that previews changes, evaluates risk, and restores files on block |
+| Unsupported package-manager mutation | Use `pnpm add` or `yarn install` when native lockfile mediation is not available yet | Blocks the command instead of pretending it is safely reviewed | Fail-closed interception for unsupported mutating managers |
+| Unmanaged global installs | Run `npm install -g` without a reviewable project context | Blocks the command in service mode | Hard fail for global installs in the current protection model |
+
+## How It Works
+
+For manual review, `npm-protect` loads the local manifest and lockfile, normalizes the
+dependency graph, applies offline policy checks, optionally enriches the result with OSV,
+registry, tarball, and signature evidence, and then emits a risk report.
+
+For always-on protection, the service currently covers three classes of commands:
+
+- full npm install mediation for `npm install`, `npm i`, `npm ci`, `npm add`, and `npm update`
+- one-off execution preflight for `npx`, `npm exec`, `npm create`, `npm init <initializer>`, `pnpm dlx`, `pnpx`, `yarn dlx`, and `yarn create`
+- fail-closed blocking for mutating `pnpm` and `yarn` install flows until native lockfile support is added
+
+For dependency-changing npm installs it first resolves the requested change with
+`--package-lock-only --ignore-scripts`, reviews the resulting dependency state, restores the
+original files if the change is blocked, and only then performs the real install with
+`--ignore-scripts`. If specific install scripts are approved, they are re-enabled later
+through a targeted `npm rebuild`.
+
+The current repository already implements:
 
 - project and lockfile discovery
 - dependency graph extraction from npm lockfiles
 - install-script, integrity, and direct dependency checks
-- typosquat heuristics for direct dependencies
-- optional OSV vulnerability lookups
-- optional npm registry integrity and signature checks
-- fresh-package age heuristics from registry publish metadata
-- optional tarball inspection for suspicious install-time behavior
-- recovery of hidden lifecycle scripts from published tarballs
-- optional npm CLI signature and provenance verification
-- opt-in local caching for remote review data
-- GitHub Action wrapper for CI usage
-- policy loading and validation
-- dependency diff summaries
-- basic publisher posture checks
-- SARIF export for review-oriented commands
+- optional OSV, registry, tarball, and signature intelligence
+- hidden lifecycle-script recovery from published tarballs
+- safer install planning and always-on `npm` and `npx`-family mediation
+- GitHub Action, SARIF, markdown, and file output support
 - CycloneDX SBOM export
-- file output support for report commands
-- automated tests for core parsing, policy, and CLI flows
+- local policy loading and validation
+- dependency diff summaries and publisher posture checks
+- automated tests for core parsing, policy, CLI, and service flows
 
-## Run
+## Quick Start
+
+Install always-on protection:
+
+```bash
+node ./bin/npm-protect.js service install
+node ./bin/npm-protect.js service status
+```
+
+Review a project manually:
+
+```bash
+node ./bin/npm-protect.js review --online --inspect-tarballs
+node ./bin/npm-protect.js review --audit-signatures
+```
+
+Generate change-review output:
+
+```bash
+node ./bin/npm-protect.js diff --project . --before-ref main --after-ref HEAD --format sarif
+node ./scripts/github-action.js
+```
+
+## More Examples
 
 ```bash
 node ./bin/npm-protect.js --help
@@ -69,7 +145,7 @@ that support markdown, appends a summary to the GitHub step summary. For `review
 - `verify`: alias of `review` with the same current behavior
 - `diff`: compare two project snapshots, lockfiles, or git refs
 - `install`: print a safer install plan based on policy and optional tarball evidence
-- `service`: install an always-on `npm` shim that mediates install commands
+- `service`: install always-on wrappers that mediate `npm` installs and preflight `npx`-style execution
 - `publish-check`: inspect local publisher posture signals
 - `sbom`: export a CycloneDX JSON SBOM for the local npm snapshot
 - `policy init`: create a sample `npm-protect.yml`
@@ -96,10 +172,9 @@ that support markdown, appends a summary to the GitHub step summary. For `review
 
 ## Always-On Protection
 
-`npm-protect` can run in two modes:
-
-- manual CLI review, where you call `review`, `diff`, or `install` yourself
-- always-on protection, where it installs an `npm` shim ahead of the real `npm` binary in your `PATH`
+The service mode is the seamless option: you install it once, put the wrapper directory in
+front of your `PATH`, and from that point forward normal package-manager commands flow
+through the guard automatically.
 
 Install the shim with:
 
@@ -110,8 +185,13 @@ npm run service:install
 npm run service:status
 ```
 
-When the shim is active, `npm-protect` intercepts `npm install`, `npm i`, `npm ci`,
-`npm add`, and `npm update`.
+When the service is active, `npm-protect` installs wrappers for `npm`, `npx`, `pnpm`,
+`pnpx`, `yarn`, and `yarnpkg`.
+
+It fully mediates `npm install`, `npm i`, `npm ci`, `npm add`, and `npm update`. It also
+preflights one-off package execution for `npx`, `npm exec`, `npm create`, `pnpm dlx`,
+`pnpx`, `yarn dlx`, and `yarn create`. This is the path that protects against accidental or
+automated unsafe installs, including installs initiated by an LLM or local scripting tool.
 
 For dependency-changing installs, it:
 
@@ -123,6 +203,14 @@ For dependency-changing installs, it:
 
 For `npm ci`, it reviews the existing lockfile first, then installs with `--ignore-scripts`,
 then rebuilds only approved packages.
+
+For `npx`-style commands, it resolves the requested package spec in a temporary project with
+`--package-lock-only --ignore-scripts`, runs the normal review pipeline on that temporary
+lockfile, and only allows execution when the result passes policy.
+
+For `pnpm` and `yarn` install-like commands that would mutate dependencies, the current
+service behavior is fail-closed: those commands are intercepted and blocked until native
+lockfile-accurate mediation for those ecosystems exists.
 
 The guard also blocks unmanaged global installs (`npm install -g`) by default, because they
 cannot be reviewed safely with the current project-based model.
@@ -290,7 +378,8 @@ Coverage currently includes:
 ## Current Limitations
 
 - npm ecosystem only
-- always-on mode currently intercepts `npm` install flows, not `npx`, `pnpm`, or `yarn`
+- full lockfile-accurate install mediation is currently implemented for npm only
+- `pnpm` and `yarn` mutating install flows are intercepted and blocked fail-closed until native support lands
 - npm provenance verification depends on `node_modules`, network access for `npm audit signatures`, and npm CLI support
 - tarball inspection currently prioritizes direct registry dependencies and packages already marked with install-time lifecycle hooks in the lockfile; it does not fetch every transitive tarball
 - publisher workflow checks are text heuristics, not full YAML semantic parsing

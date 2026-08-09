@@ -1,8 +1,7 @@
-import { chmod } from "node:fs/promises";
-
 import {
   getProtectionServiceStatus,
   installProtectionService,
+  runProtectedPackageManagerCommand,
   runProtectedNpmCommand,
   uninstallProtectionService,
 } from "../lib/service.js";
@@ -29,7 +28,11 @@ export async function runServiceCommand(subcommand, argv, options = {}) {
   }
 
   if (subcommand === "run") {
-    const result = await runProtectedNpmCommand(argv, options);
+    const runArgs = parseServiceRunArgs(argv);
+    const result =
+      runArgs.toolName === "npm"
+        ? await runProtectedNpmCommand(runArgs.args, options)
+        : await runProtectedPackageManagerCommand(runArgs.toolName, runArgs.args, options);
     if (result.exitCode) {
       process.exitCode = result.exitCode;
     }
@@ -43,7 +46,6 @@ async function runServiceInstall(args, options) {
   const installResult = await installProtectionService(
     {
       binDir: asOptionalString(args.flags["bin-dir"]),
-      realNpmPath: asOptionalString(args.flags["real-npm"]),
       cliPath: asOptionalString(args.flags["cli-path"]),
       nodePath: asOptionalString(args.flags["node-path"]),
       pathValue: options.pathValue,
@@ -56,9 +58,11 @@ async function runServiceInstall(args, options) {
     return;
   }
 
-  console.log(`Installed npm-protect wrapper at ${installResult.wrapperPath}`);
-  console.log(`Real npm path: ${installResult.realNpmPath}`);
+  console.log(`Installed npm-protect wrappers in ${installResult.binDir}`);
+  console.log(`Wrapped tools: ${installResult.wrappers.map((wrapper) => wrapper.name).join(", ")}`);
+  console.log(`Primary npm wrapper: ${installResult.wrapperPath}`);
   console.log(`CLI path: ${installResult.cliPath}`);
+  console.log(`Real npm path: ${installResult.realNpmPath ?? "(resolved at runtime)"}`);
 
   if (!installResult.pathActive) {
     console.log("");
@@ -81,11 +85,17 @@ async function runServiceStatus(args, options) {
     return;
   }
 
-  console.log(`Wrapper path: ${status.wrapperPath}`);
+  console.log(`Primary npm wrapper: ${status.wrapperPath}`);
   console.log(`Wrapper installed: ${status.wrapperExists ? "yes" : "no"}`);
   console.log(`PATH active: ${status.pathActive ? "yes" : "no"}`);
   console.log(`Current npm path: ${status.currentNpmPath ?? "(unresolved)"}`);
   console.log(`Protection active: ${status.active ? "yes" : "no"}`);
+
+  for (const wrapper of status.wrappers) {
+    console.log(
+      `- ${wrapper.name}: installed=${wrapper.wrapperExists ? "yes" : "no"} active=${wrapper.active ? "yes" : "no"} current=${wrapper.currentPath ?? "(unresolved)"}`,
+    );
+  }
 }
 
 async function runServiceUninstall(args, options) {
@@ -98,7 +108,14 @@ async function runServiceUninstall(args, options) {
     return;
   }
 
-  console.log(`Removed ${result.wrapperPath}`);
+  for (const wrapper of result.removedWrappers) {
+    console.log(`Removed ${wrapper.wrapperPath}`);
+  }
+
+  for (const wrapper of result.skippedWrappers) {
+    console.log(`Skipped ${wrapper.wrapperPath} because it is not an npm-protect managed wrapper`);
+  }
+
   console.log(`Removed ${result.manifestPath}`);
 }
 
@@ -106,7 +123,7 @@ function printServiceHelp() {
   console.log(`npm-protect service
 
 Usage:
-  npm-protect service install [--bin-dir <dir>] [--real-npm <path>] [--json]
+  npm-protect service install [--bin-dir <dir>] [--json]
   npm-protect service status [--bin-dir <dir>] [--json]
   npm-protect service uninstall [--bin-dir <dir>] [--json]
 `);
@@ -142,6 +159,18 @@ function parseServiceArgs(argv) {
   }
 
   return { flags, positionals };
+}
+
+function parseServiceRunArgs(argv) {
+  const separatorIndex = argv.indexOf("--");
+  const serviceArgs = separatorIndex === -1 ? argv : argv.slice(0, separatorIndex);
+  const forwardedArgs = separatorIndex === -1 ? [] : argv.slice(separatorIndex + 1);
+  const parsed = parseServiceArgs(serviceArgs);
+
+  return {
+    toolName: asOptionalString(parsed.flags.tool) ?? process.env.NPM_PROTECT_TOOL ?? "npm",
+    args: separatorIndex === -1 ? parsed.positionals : forwardedArgs,
+  };
 }
 
 function asOptionalString(value) {

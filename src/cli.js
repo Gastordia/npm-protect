@@ -19,7 +19,7 @@ Commands:
   install          Print a safer install plan
   publish-check    Check local publisher posture signals
   sbom             Export a CycloneDX SBOM from the local npm snapshot
-  service          Install or run the always-on npm protection shim
+  service          Install or run the always-on package-manager protection shims
   policy init      Write a sample npm-protect.yml
   policy validate  Validate config or defaults
 
