@@ -5,6 +5,7 @@ import { analyzeTyposquats } from "./typosquat.js";
 export function evaluateProject(project, config, validationErrors = []) {
   return evaluateProjectWithIntelligence(project, config, {
     validationErrors,
+    securityWarnings: [],
     intelligence: {
       findings: [],
       sources: [],
@@ -16,6 +17,7 @@ export function evaluateProject(project, config, validationErrors = []) {
         tarballsInspected: 0,
         recoveredLifecycleScriptPackages: 0,
         suspiciousTarballPackages: 0,
+        trustedScopeCollisions: 0,
       },
     },
   });
@@ -26,6 +28,7 @@ export function evaluateProjectWithIntelligence(project, config, options = {}) {
   const packages = project.lockfile?.packages ?? [];
   const directDependencies = project.directDependencies ?? [];
   const validationErrors = options.validationErrors ?? [];
+  const securityWarnings = options.securityWarnings ?? [];
   const intelligence = options.intelligence ?? {
     findings: [],
     sources: [],
@@ -37,6 +40,7 @@ export function evaluateProjectWithIntelligence(project, config, options = {}) {
       tarballsInspected: 0,
       recoveredLifecycleScriptPackages: 0,
       suspiciousTarballPackages: 0,
+      trustedScopeCollisions: 0,
     },
   };
   const localInstallScriptPackages = packages.filter((pkg) => pkg.hasInstallScript).length;
@@ -48,6 +52,14 @@ export function evaluateProjectWithIntelligence(project, config, options = {}) {
       severity: "error",
       code: "invalid_config",
       message: error,
+    });
+  }
+
+  for (const warning of securityWarnings) {
+    findings.push({
+      severity: "warn",
+      code: "insecure_local_policy_file",
+      message: warning,
     });
   }
 
@@ -83,18 +95,23 @@ export function evaluateProjectWithIntelligence(project, config, options = {}) {
     }
   }
 
-  for (const dependency of directDependencies) {
-    if (!dependency.isRegistryDependency) {
-      findings.push({
-        severity: "warn",
-        code: "non_registry_direct_dependency",
-        message: `${dependency.name} uses a non-registry specifier (${dependency.spec})`,
-        packageName: dependency.name,
-        details: {
-          spec: dependency.spec,
-          field: dependency.field,
-        },
-      });
+  if (
+    config.warnRules.nonRegistryDirectDependencies ||
+    config.blockRules.nonRegistryDirectDependencies
+  ) {
+    for (const dependency of directDependencies) {
+      if (!dependency.isRegistryDependency) {
+        findings.push({
+          severity: config.blockRules.nonRegistryDirectDependencies ? "error" : "warn",
+          code: "non_registry_direct_dependency",
+          message: `${dependency.name} uses a non-registry specifier (${dependency.spec})`,
+          packageName: dependency.name,
+          details: {
+            spec: dependency.spec,
+            field: dependency.field,
+          },
+        });
+      }
     }
   }
 
@@ -182,6 +199,7 @@ export function evaluateProjectWithIntelligence(project, config, options = {}) {
       freshPackages: intelligence.stats?.freshPackages ?? 0,
       tarballsInspected: intelligence.stats?.tarballsInspected ?? 0,
       suspiciousTarballPackages: intelligence.stats?.suspiciousTarballPackages ?? 0,
+      trustedScopeCollisions: intelligence.stats?.trustedScopeCollisions ?? 0,
     },
     sources: intelligence.sources ?? [],
     findings,

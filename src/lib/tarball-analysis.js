@@ -1,4 +1,6 @@
-import { gunzipSync } from "node:zlib";
+import { finished } from "node:stream/promises";
+import { Readable } from "node:stream";
+import { createGunzip } from "node:zlib";
 
 const LIFECYCLE_SCRIPTS = ["preinstall", "install", "postinstall", "prepare"];
 
@@ -31,10 +33,13 @@ const EXEC_PATTERN = /\bchild_process\b|\bexecSync\b|\bspawnSync\b|\bspawn\b|\be
 const URL_PATTERN = /https?:\/\//iu;
 const SHELL_DOWNLOAD_PATTERN = /\b(?:curl|wget)\b|Invoke-WebRequest|certutil\b/iu;
 
-export function inspectPackageTarball(tarballBuffer, pkg, config, settings = {}) {
+export async function inspectPackageTarball(tarballBuffer, pkg, config, settings = {}) {
   const severity = config.blockRules.suspiciousTarballIndicators ? "error" : "warn";
   const findings = [];
-  const entries = extractTextEntries(tarballBuffer, settings.maxFileBytes ?? 65536);
+  const entries = await extractTextEntries(tarballBuffer, {
+    maxFileBytes: settings.maxFileBytes ?? 65536,
+    maxUnpackedBytes: settings.maxUnpackedBytes ?? 25 * 1024 * 1024,
+  });
   const manifestText = entries.get("package.json");
 
   if (!manifestText) {
@@ -143,8 +148,11 @@ function collectLifecycleScripts(scripts) {
   return lifecycleScripts;
 }
 
-function extractTextEntries(tarballBuffer, maxFileBytes) {
-  const decompressed = gunzipSync(Buffer.from(tarballBuffer));
+async function extractTextEntries(tarballBuffer, settings) {
+  const decompressed = await decompressTarballWithLimit(
+    tarballBuffer,
+    Number(settings.maxUnpackedBytes ?? 25 * 1024 * 1024),
+  );
   const entries = new Map();
   let offset = 0;
 
@@ -166,7 +174,10 @@ function extractTextEntries(tarballBuffer, maxFileBytes) {
       entries.set(
         fullName,
         decompressed
-          .subarray(contentStart, Math.min(contentEnd, contentStart + maxFileBytes))
+          .subarray(
+            contentStart,
+            Math.min(contentEnd, contentStart + Number(settings.maxFileBytes ?? 65536)),
+          )
           .toString("utf8"),
       );
     }
@@ -175,6 +186,49 @@ function extractTextEntries(tarballBuffer, maxFileBytes) {
   }
 
   return entries;
+}
+
+async function decompressTarballWithLimit(tarballBuffer, maxUnpackedBytes) {
+  const source = Readable.from(Buffer.from(tarballBuffer));
+  const gunzip = createGunzip();
+  const chunks = [];
+  let totalBytes = 0;
+  let limitError = null;
+
+  gunzip.on("data", (chunk) => {
+    if (limitError) {
+      return;
+    }
+
+    totalBytes += chunk.length;
+    if (maxUnpackedBytes > 0 && totalBytes > maxUnpackedBytes) {
+      limitError = new Error(
+        `decompressed tarball exceeds the configured limit of ${maxUnpackedBytes} bytes`,
+      );
+      source.destroy(limitError);
+      gunzip.destroy(limitError);
+      return;
+    }
+
+    chunks.push(Buffer.from(chunk));
+  });
+
+  source.pipe(gunzip);
+
+  try {
+    await finished(gunzip);
+  } catch (error) {
+    if (limitError) {
+      throw limitError;
+    }
+    throw error;
+  }
+
+  if (limitError) {
+    throw limitError;
+  }
+
+  return Buffer.concat(chunks, totalBytes);
 }
 
 function extractScriptFileReferences(command) {

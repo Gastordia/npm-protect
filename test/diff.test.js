@@ -238,3 +238,48 @@ packages:
   assert.ok(report.added.includes("esbuild@0.25.0"));
   assert.ok(report.removed.includes("react@19.0.0"));
 });
+
+test("loadGitRefSnapshot also reads yarn lockfiles from git refs", async () => {
+  const refs = {
+    refA: {
+      "yarn.lock": `
+# yarn lockfile v1
+
+react@19.0.0:
+  version "19.0.0"
+  resolved "https://registry.npmjs.org/react/-/react-19.0.0.tgz#cafebabe"
+  integrity sha512-react
+`,
+    },
+    refB: {
+      "yarn.lock": `
+# yarn lockfile v1
+
+esbuild@0.25.0:
+  version "0.25.0"
+  resolved "https://registry.npmjs.org/esbuild/-/esbuild-0.25.0.tgz#deadbeef"
+  integrity sha512-esbuild
+`,
+    },
+  };
+
+  const readGitFile = async (_repoDir, ref, filePath) => {
+    const content = refs[ref]?.[filePath];
+    if (!content) {
+      throw new Error(`git path "${filePath}" was not found in ref "${ref}"`);
+    }
+    return content;
+  };
+
+  const before = await loadGitRefSnapshot("/tmp/demo-repo", "refA", null, {
+    readGitFile,
+  });
+  const after = await loadGitRefSnapshot("/tmp/demo-repo", "refB", null, {
+    readGitFile,
+  });
+  const report = diffSnapshots(before, after);
+
+  assert.equal(report.verdict, "warn");
+  assert.ok(report.added.includes("esbuild@0.25.0"));
+  assert.ok(report.removed.includes("react@19.0.0"));
+});

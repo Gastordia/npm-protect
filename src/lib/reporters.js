@@ -77,6 +77,7 @@ function formatReviewText(report) {
     `Direct packages checked against registry: ${report.stats.directPackagesCheckedAgainstRegistry}`,
     `Verified attestations: ${report.stats.verifiedAttestations}`,
     `Fresh packages: ${report.stats.freshPackages}`,
+    `Trusted-scope collisions: ${report.stats.trustedScopeCollisions}`,
     `Tarballs inspected: ${report.stats.tarballsInspected}`,
     `Suspicious tarball packages: ${report.stats.suspiciousTarballPackages}`,
   ];
@@ -96,6 +97,9 @@ function formatReviewText(report) {
       }
       if (source.freshPackages !== undefined) {
         detailParts.push(`freshPackages=${source.freshPackages}`);
+      }
+      if (source.trustedScopeCollisions !== undefined) {
+        detailParts.push(`trustedScopeCollisions=${source.trustedScopeCollisions}`);
       }
       if (source.inspectedPackages !== undefined) {
         detailParts.push(`inspected=${source.inspectedPackages}`);
@@ -217,6 +221,7 @@ function formatPublishCheckText(report) {
 function formatInstallText(plan) {
   const lines = [
     `Project: ${plan.project.name ?? "(unnamed project)"}${plan.project.version ? `@${plan.project.version}` : ""}`,
+    `Package manager: ${plan.packageManager}`,
     `Safe install mode: ${plan.mode}`,
     "",
   ];
@@ -264,6 +269,7 @@ function formatInstallMarkdown(plan) {
     "# npm-protect install",
     "",
     `- Project: \`${plan.project.name ?? "(unnamed project)"}${plan.project.version ? `@${plan.project.version}` : ""}\``,
+    `- Package manager: \`${plan.packageManager}\``,
     `- Mode: \`${plan.mode}\``,
     `- Packages with install scripts: \`${plan.stats.packagesWithInstallScripts}\``,
     `- Recovered via tarball inspection: \`${plan.stats.recoveredLifecycleScriptPackages}\``,
@@ -309,6 +315,7 @@ function formatReviewMarkdown(report) {
     `- Registry checks: \`${report.stats.directPackagesCheckedAgainstRegistry}\``,
     `- Verified attestations: \`${report.stats.verifiedAttestations}\``,
     `- Fresh packages: \`${report.stats.freshPackages}\``,
+    `- Trusted-scope collisions: \`${report.stats.trustedScopeCollisions}\``,
     `- Tarballs inspected: \`${report.stats.tarballsInspected}\``,
     `- Suspicious tarball packages: \`${report.stats.suspiciousTarballPackages}\``,
   ];
@@ -328,6 +335,9 @@ function formatReviewMarkdown(report) {
       }
       if (source.freshPackages !== undefined) {
         details.push(`freshPackages=${source.freshPackages}`);
+      }
+      if (source.trustedScopeCollisions !== undefined) {
+        details.push(`trustedScopeCollisions=${source.trustedScopeCollisions}`);
       }
       if (source.inspectedPackages !== undefined) {
         details.push(`inspected=${source.inspectedPackages}`);

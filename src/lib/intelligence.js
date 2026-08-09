@@ -42,6 +42,7 @@ export async function collectExternalIntelligence(
     tarballsInspected: 0,
     recoveredLifecycleScriptPackages: 0,
     suspiciousTarballPackages: 0,
+    trustedScopeCollisions: 0,
   };
 
   if (settings.osv.enabled && fetchImpl) {
@@ -98,11 +99,13 @@ export async function collectExternalIntelligence(
       stats.directPackagesCheckedAgainstRegistry +=
         registryResult.stats.directPackagesChecked;
       stats.freshPackages += registryResult.stats.freshPackages;
+      stats.trustedScopeCollisions += registryResult.stats.trustedScopeCollisions;
       sources.push({
         name: "registry",
         status: "ok",
         checkedPackages: registryResult.stats.directPackagesChecked,
         freshPackages: registryResult.stats.freshPackages,
+        trustedScopeCollisions: registryResult.stats.trustedScopeCollisions,
         cacheHits: registryResult.stats.cacheHits,
         cacheWrites: registryResult.stats.cacheWrites,
         url: settings.registry.url,
@@ -247,6 +250,8 @@ function resolveCollectorSettings(config, flags) {
       timeoutMs: Number(config.services?.tarballs?.timeoutMs ?? 10000),
       maxFilesPerPackage: Number(config.services?.tarballs?.maxFilesPerPackage ?? 6),
       maxFileBytes: Number(config.services?.tarballs?.maxFileBytes ?? 65536),
+      maxTarballBytes: Number(config.services?.tarballs?.maxTarballBytes ?? 5242880),
+      maxUnpackedBytes: Number(config.services?.tarballs?.maxUnpackedBytes ?? 26214400),
       selection: resolveTarballSelection(
         flags["inspect-tarballs"],
         config.services?.tarballs?.selection,
@@ -449,6 +454,7 @@ async function collectOsvVulnerabilities(project, config, settings, fetchImpl, c
 }
 
 async function collectRegistryMetadata(project, config, settings, fetchImpl, now, cache = null) {
+  const trustedScopes = normalizeTrustedScopes(config.trustedScopes);
   const directPackages = dedupePackages(
     (project.lockfile?.packages ?? [])
       .filter((pkg) => pkg.isDirectDependency)
@@ -468,6 +474,7 @@ async function collectRegistryMetadata(project, config, settings, fetchImpl, now
 
   const findings = [];
   let freshPackages = 0;
+  let trustedScopeCollisions = 0;
   let cacheHits = 0;
   let cacheWrites = 0;
 
@@ -496,6 +503,21 @@ async function collectRegistryMetadata(project, config, settings, fetchImpl, now
         packagePath: pkg.packagePath,
       });
       continue;
+    }
+
+    if (!pkg.name.startsWith("@") && trustedScopes.length > 0) {
+      const collisionResult = await collectTrustedScopeCollisionFindings(
+        pkg,
+        config,
+        settings,
+        trustedScopes,
+        fetchImpl,
+        cache,
+      );
+      findings.push(...collisionResult.findings);
+      trustedScopeCollisions += collisionResult.stats.collisions;
+      cacheHits += collisionResult.stats.cacheHits;
+      cacheWrites += collisionResult.stats.cacheWrites;
     }
 
     const registryIntegrity = versionMetadata.dist?.integrity ?? null;
@@ -575,6 +597,69 @@ async function collectRegistryMetadata(project, config, settings, fetchImpl, now
     stats: {
       directPackagesChecked: directPackages.length,
       freshPackages,
+      trustedScopeCollisions,
+      cacheHits,
+      cacheWrites,
+    },
+  };
+}
+
+async function collectTrustedScopeCollisionFindings(
+  pkg,
+  config,
+  settings,
+  trustedScopes,
+  fetchImpl,
+  cache = null,
+) {
+  const findings = [];
+  let collisions = 0;
+  let cacheHits = 0;
+  let cacheWrites = 0;
+
+  for (const scope of trustedScopes) {
+    const candidateName = `${scope}/${pkg.name}`;
+    const packumentUrl = `${settings.url.replace(/\/+$/u, "")}/${encodeURIComponent(candidateName)}`;
+    const packumentResponse = await fetchJsonIfExists(
+      packumentUrl,
+      {},
+      settings.timeoutMs,
+      fetchImpl,
+      cache,
+      { service: "registry-trusted-scope", packageName: candidateName },
+    );
+    cacheHits += packumentResponse.meta.cacheHits;
+    cacheWrites += packumentResponse.meta.cacheWrites;
+
+    const versions = packumentResponse.data?.versions;
+    if (!versions || Object.keys(versions).length === 0) {
+      continue;
+    }
+
+    collisions += 1;
+    const severity = config.blockRules.trustedScopeNameCollisions ? "error" : "warn";
+    if (severity === "warn" && !config.warnRules.trustedScopeNameCollisions) {
+      continue;
+    }
+
+    findings.push({
+      severity,
+      code: "trusted_scope_name_collision",
+      message: `${pkg.name}@${pkg.version} is unscoped, but ${candidateName} exists in a trusted scope and may indicate dependency-confusion or internal/public name collision risk`,
+      packageName: pkg.name,
+      packageVersion: pkg.version,
+      packagePath: pkg.packagePath,
+      details: {
+        source: "registry",
+        trustedScopePackage: candidateName,
+      },
+    });
+  }
+
+  return {
+    findings,
+    stats: {
+      collisions,
       cacheHits,
       cacheWrites,
     },
@@ -619,12 +704,15 @@ async function collectTarballIntelligence(project, config, settings, fetchImpl, 
         fetchImpl,
         cache,
         { service: "tarballs", packageName: pkg.name, version: pkg.version },
+        {
+          maxBytes: settings.maxTarballBytes,
+        },
       );
       cacheHits += tarballResponse.meta.cacheHits;
       cacheWrites += tarballResponse.meta.cacheWrites;
       const tarballBuffer = tarballResponse.data;
       inspectedPackages += 1;
-      const analysis = inspectPackageTarball(tarballBuffer, pkg, config, settings);
+      const analysis = await inspectPackageTarball(tarballBuffer, pkg, config, settings);
       const lifecycleScripts = analysis.metadata?.lifecycleScripts ?? [];
 
       if (lifecycleScripts.length > 0 && !pkg.hasInstallScript) {
@@ -741,7 +829,33 @@ async function fetchJson(url, init, timeoutMs, fetchImpl, cache = null, cacheIde
   }
 }
 
-async function fetchBuffer(url, init, timeoutMs, fetchImpl, cache = null, cacheIdentity = {}) {
+async function fetchJsonIfExists(url, init, timeoutMs, fetchImpl, cache = null, cacheIdentity = {}) {
+  try {
+    return await fetchJson(url, init, timeoutMs, fetchImpl, cache, cacheIdentity);
+  } catch (error) {
+    if (error instanceof Error && /HTTP 404\b/u.test(error.message)) {
+      return {
+        data: null,
+        meta: {
+          cacheHits: 0,
+          cacheWrites: 0,
+        },
+      };
+    }
+
+    throw error;
+  }
+}
+
+async function fetchBuffer(
+  url,
+  init,
+  timeoutMs,
+  fetchImpl,
+  cache = null,
+  cacheIdentity = {},
+  options = {},
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const cacheKey = buildCacheKey({
@@ -754,8 +868,10 @@ async function fetchBuffer(url, init, timeoutMs, fetchImpl, cache = null, cacheI
   try {
     const cached = await readCache(cache, cacheKey);
     if (cached?.kind === "buffer" && typeof cached.base64 === "string") {
+      const data = Buffer.from(cached.base64, "base64");
+      assertBufferSizeLimit(data, options.maxBytes, url, "cached tarball");
       return {
-        data: Buffer.from(cached.base64, "base64"),
+        data,
         meta: {
           cacheHits: 1,
           cacheWrites: 0,
@@ -772,7 +888,9 @@ async function fetchBuffer(url, init, timeoutMs, fetchImpl, cache = null, cacheI
       throw new Error(`HTTP ${response.status} from ${url}`);
     }
 
+    assertDeclaredContentLengthLimit(response.headers, options.maxBytes, url);
     const data = Buffer.from(await response.arrayBuffer());
+    assertBufferSizeLimit(data, options.maxBytes, url, "downloaded tarball");
     const wrote = await writeCache(cache, cacheKey, {
       kind: "buffer",
       base64: data.toString("base64"),
@@ -1027,6 +1145,39 @@ function resolveTarballSelection(flagValue, configuredSelection) {
       : configuredSelection ?? "focused";
 
   return candidate === "all" ? "all" : "focused";
+}
+
+function normalizeTrustedScopes(scopes = []) {
+  if (!Array.isArray(scopes)) {
+    return [];
+  }
+
+  return [...new Set(scopes.map((scope) => String(scope).trim()).filter((scope) => /^@[^/\s]+$/u.test(scope)))];
+}
+
+function assertDeclaredContentLengthLimit(headers, maxBytes, url) {
+  if (!maxBytes || !headers || typeof headers.get !== "function") {
+    return;
+  }
+
+  const contentLength = headers.get("content-length");
+  if (!contentLength || !/^\d+$/u.test(contentLength)) {
+    return;
+  }
+
+  if (Number(contentLength) > maxBytes) {
+    throw new Error(
+      `tarball download for ${url} exceeds the configured limit of ${maxBytes} bytes`,
+    );
+  }
+}
+
+function assertBufferSizeLimit(buffer, maxBytes, url, label) {
+  if (!maxBytes || buffer.length <= maxBytes) {
+    return;
+  }
+
+  throw new Error(`${label} for ${url} exceeds the configured limit of ${maxBytes} bytes`);
 }
 
 function chunkArray(values, size) {

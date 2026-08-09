@@ -3,7 +3,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { DEFAULT_CONFIG } from "../src/lib/config.js";
-import { evaluateProject } from "../src/lib/policy.js";
+import { evaluateProject, evaluateProjectWithIntelligence } from "../src/lib/policy.js";
 import { loadProjectSnapshot } from "../src/lib/project.js";
 
 const fixturesDir = path.join(process.cwd(), "test", "fixtures");
@@ -35,10 +35,46 @@ test("evaluateProject blocks unapproved install scripts in enforce mode", async 
   );
 });
 
+test("evaluateProject can block non-registry direct dependencies when configured", async () => {
+  const project = await loadProjectSnapshot(path.join(fixturesDir, "warn-project"));
+  const report = evaluateProject(project, {
+    ...DEFAULT_CONFIG,
+    mode: "enforce",
+    blockRules: {
+      ...DEFAULT_CONFIG.blockRules,
+      nonRegistryDirectDependencies: true,
+    },
+  });
+
+  assert.equal(report.riskVerdict, "block");
+  assert.equal(report.verdict, "block");
+  assert.ok(
+    report.findings.some(
+      (finding) =>
+        finding.code === "non_registry_direct_dependency" && finding.severity === "error",
+    ),
+  );
+});
+
 test("loadProjectSnapshot annotates top-level direct dependencies", async () => {
   const project = await loadProjectSnapshot(path.join(fixturesDir, "block-project"));
   const esbuild = project.lockfile.packages.find((pkg) => pkg.name === "esbuild");
 
   assert.equal(esbuild.isTopLevel, true);
   assert.equal(esbuild.isDirectDependency, true);
+});
+
+test("evaluateProjectWithIntelligence warns on insecure local policy files", async () => {
+  const project = await loadProjectSnapshot(path.join(fixturesDir, "warn-project"));
+  const report = evaluateProjectWithIntelligence(project, DEFAULT_CONFIG, {
+    securityWarnings: [
+      "approval store at /tmp/approvals.json is writable by group or other users; restrict it to the current user to reduce tampering risk",
+    ],
+  });
+
+  assert.equal(report.riskVerdict, "warn");
+  assert.equal(report.verdict, "warn");
+  assert.ok(
+    report.findings.some((finding) => finding.code === "insecure_local_policy_file"),
+  );
 });

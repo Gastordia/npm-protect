@@ -3,6 +3,10 @@ export function parseLockfileContent(lockfilePath, content) {
     return parsePnpmLockfile(String(content));
   }
 
+  if (isYarnLockfilePath(lockfilePath)) {
+    return parseYarnLockfile(String(content));
+  }
+
   return parseLockfile(JSON.parse(String(content)));
 }
 
@@ -153,6 +157,109 @@ export function parsePnpmLockfile(content) {
     packageCount: packages.length,
     packages,
     directDependencyKeys: [...directDependencyKeys].sort(),
+  };
+}
+
+export function parseYarnLockfile(content) {
+  const rawContent = String(content);
+  const lines = rawContent
+    .split(/\r?\n/u)
+    .map((rawLine) => ({
+      raw: rawLine,
+      indent: countIndent(rawLine),
+      content: rawLine.trim(),
+    }))
+    .filter((line) => line.content.length > 0 && !line.content.startsWith("#"));
+
+  let lockfileVersion = inferClassicYarnLockfileVersion(rawContent);
+  let currentEntry = null;
+  let currentSection = null;
+  let readingMetadata = false;
+  const packageEntries = [];
+
+  for (const line of lines) {
+    if (line.indent === 0) {
+      currentSection = null;
+
+      if (!line.content.endsWith(":")) {
+        currentEntry = null;
+        readingMetadata = false;
+        continue;
+      }
+
+      const key = unquoteKey(stripTrailingColon(line.content));
+      if (key === "__metadata") {
+        currentEntry = null;
+        readingMetadata = true;
+        continue;
+      }
+
+      readingMetadata = false;
+      currentEntry = {
+        rawKeyText: stripTrailingColon(line.content),
+        rawKeys: splitYarnDescriptorList(stripTrailingColon(line.content)),
+        version: null,
+        resolved: null,
+        integrity: null,
+        resolution: null,
+        checksum: null,
+        dependencyCount: 0,
+      };
+      packageEntries.push(currentEntry);
+      continue;
+    }
+
+    if (readingMetadata) {
+      if (line.indent !== 2) {
+        continue;
+      }
+
+      const entry = splitYarnFieldLine(line.content);
+      if (entry?.key === "version") {
+        const parsedVersion = parseScalar(entry.valueText);
+        if (parsedVersion !== null) {
+          lockfileVersion = parsedVersion;
+        }
+      }
+      continue;
+    }
+
+    if (!currentEntry) {
+      continue;
+    }
+
+    if (line.indent === 2) {
+      const entry = splitYarnFieldLine(line.content);
+      if (!entry) {
+        currentSection = null;
+        continue;
+      }
+
+      if (isDependencySection(entry.key)) {
+        currentSection = entry.key;
+        continue;
+      }
+
+      currentSection = null;
+      applyYarnPackageField(currentEntry, entry.key, entry.valueText);
+      continue;
+    }
+
+    if (line.indent === 4 && isDependencySection(currentSection)) {
+      if (splitYarnFieldLine(line.content)) {
+        currentEntry.dependencyCount += 1;
+      }
+    }
+  }
+
+  const packages = packageEntries.map(finalizeYarnPackageEntry);
+
+  return {
+    packageManager: "yarn",
+    lockfileVersion,
+    packageCount: packages.length,
+    packages,
+    directDependencyKeys: [],
   };
 }
 
@@ -386,6 +493,59 @@ function applyPnpmPackageField(currentPackage, key, valueText) {
   }
 }
 
+function applyYarnPackageField(currentPackage, key, valueText) {
+  if (key === "version") {
+    currentPackage.version = stripQuotes(valueText);
+    return;
+  }
+
+  if (key === "resolved") {
+    currentPackage.resolved = sanitizeYarnResolvedUrl(stripQuotes(valueText));
+    return;
+  }
+
+  if (key === "integrity") {
+    currentPackage.integrity = stripQuotes(valueText);
+    return;
+  }
+
+  if (key === "resolution") {
+    currentPackage.resolution = stripQuotes(valueText);
+    return;
+  }
+
+  if (key === "checksum") {
+    currentPackage.checksum = stripQuotes(valueText);
+  }
+}
+
+function finalizeYarnPackageEntry(entry) {
+  const descriptors = entry.rawKeys.map(parseYarnDescriptor);
+  const primaryDescriptor = descriptors.find((descriptor) => descriptor.name) ?? {
+    name: entry.rawKeys[0] ?? entry.rawKeyText,
+    reference: null,
+  };
+  const version =
+    entry.version ??
+    inferVersionFromYarnResolution(entry.resolution) ??
+    primaryDescriptor.reference ??
+    "unknown";
+  const name = primaryDescriptor.name ?? entry.rawKeys[0] ?? "unknown";
+
+  return {
+    name,
+    version,
+    path: `node_modules/.yarn/${normalizeYarnStoreKey(name, version, entry.rawKeys)}/node_modules/${name}`,
+    resolved: entry.resolved ?? inferDefaultRegistryTarballUrl(name, version),
+    integrity: entry.integrity ?? null,
+    dev: false,
+    optional: false,
+    hasInstallScript: null,
+    dependencyCount: entry.dependencyCount ?? 0,
+    rawKeys: [...entry.rawKeys],
+  };
+}
+
 function parsePnpmPackageKey(rawKey) {
   const normalized = String(rawKey).replace(/^\/+/u, "");
   const withoutPeerSuffix = normalized.replace(/\(.+$/u, "");
@@ -406,8 +566,92 @@ function parsePnpmPackageKey(rawKey) {
   };
 }
 
+function parseYarnDescriptor(rawDescriptor) {
+  const descriptor = stripQuotes(String(rawDescriptor).trim());
+  if (descriptor.length === 0) {
+    return {
+      name: null,
+      reference: null,
+    };
+  }
+
+  if (descriptor.startsWith("@")) {
+    const slashIndex = descriptor.indexOf("/");
+    if (slashIndex === -1) {
+      return {
+        name: descriptor,
+        reference: null,
+      };
+    }
+
+    const separatorIndex = descriptor.indexOf("@", slashIndex + 1);
+    if (separatorIndex === -1) {
+      return {
+        name: descriptor,
+        reference: null,
+      };
+    }
+
+    return {
+      name: descriptor.slice(0, separatorIndex),
+      reference: descriptor.slice(separatorIndex + 1) || null,
+    };
+  }
+
+  const separatorIndex = descriptor.indexOf("@");
+  if (separatorIndex === -1) {
+    return {
+      name: descriptor,
+      reference: null,
+    };
+  }
+
+  return {
+    name: descriptor.slice(0, separatorIndex),
+    reference: descriptor.slice(separatorIndex + 1) || null,
+  };
+}
+
 function normalizeDirectDependencyKey(name, version) {
   return version ? `${name}@${version}` : name;
+}
+
+function splitYarnDescriptorList(rawKeyText) {
+  const descriptors = [];
+  let current = "";
+  let quote = null;
+
+  for (const character of String(rawKeyText)) {
+    if (quote) {
+      current += character;
+      if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "'") {
+      quote = character;
+      current += character;
+      continue;
+    }
+
+    if (character === ",") {
+      if (current.trim().length > 0) {
+        descriptors.push(unquoteKey(current));
+      }
+      current = "";
+      continue;
+    }
+
+    current += character;
+  }
+
+  if (current.trim().length > 0) {
+    descriptors.push(unquoteKey(current));
+  }
+
+  return descriptors;
 }
 
 function normalizePnpmDependencyVersion(valueText, preservePeerSuffix = false) {
@@ -441,6 +685,28 @@ function matchInlineResolutionValue(valueText, key) {
     new RegExp(`(?:^|[,{]\\s*)${escapeRegExp(key)}\\s*:\\s*([^,}]+)`, "u"),
   );
   return match ? stripQuotes(match[1].trim()) : null;
+}
+
+function inferClassicYarnLockfileVersion(content) {
+  const match = String(content).match(/#\s*yarn lockfile v(\d+)/iu);
+  return match ? Number(match[1]) : null;
+}
+
+function inferVersionFromYarnResolution(resolution) {
+  if (typeof resolution !== "string" || resolution.length === 0) {
+    return null;
+  }
+
+  const descriptor = parseYarnDescriptor(resolution);
+  if (!descriptor.reference) {
+    return null;
+  }
+
+  if (descriptor.reference.startsWith("npm:")) {
+    return descriptor.reference.slice(4);
+  }
+
+  return descriptor.reference;
 }
 
 function inferDefaultRegistryTarballUrl(name, version) {
@@ -477,6 +743,12 @@ function normalizePnpmStoreKey(key) {
   return String(key).replace(/^\/+/u, "").replace(/[\\/]/gu, "+");
 }
 
+function normalizeYarnStoreKey(name, version, rawKeys) {
+  return `${name}@${version}__${rawKeys.join("|")}`
+    .replace(/[\\/]/gu, "+")
+    .replace(/[^a-z0-9@._|+-]+/giu, "_");
+}
+
 function splitKeyValueLine(content) {
   const separatorIndex = content.indexOf(":");
   if (separatorIndex === -1) {
@@ -486,6 +758,23 @@ function splitKeyValueLine(content) {
   return {
     key: unquoteKey(content.slice(0, separatorIndex).trim()),
     valueText: content.slice(separatorIndex + 1).trim(),
+  };
+}
+
+function splitYarnFieldLine(content) {
+  const keyValue = splitKeyValueLine(content);
+  if (keyValue && /^[a-zA-Z0-9_.-]+$/u.test(keyValue.key)) {
+    return keyValue;
+  }
+
+  const match = String(content).match(/^([a-zA-Z][a-zA-Z0-9_.-]*)\s+(.+)$/u);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    key: match[1],
+    valueText: match[2].trim(),
   };
 }
 
@@ -535,6 +824,10 @@ function stripQuotes(value) {
   return trimmed;
 }
 
+function sanitizeYarnResolvedUrl(value) {
+  return String(value).replace(/#.*$/u, "");
+}
+
 function isDependencySection(name) {
   return [
     "dependencies",
@@ -567,4 +860,8 @@ function inferNameFromPackagePath(packagePath) {
 
 function isPnpmLockfilePath(lockfilePath) {
   return /(?:^|\/)pnpm-lock\.ya?ml$/iu.test(String(lockfilePath));
+}
+
+function isYarnLockfilePath(lockfilePath) {
+  return /(?:^|\/)yarn\.lock$/iu.test(String(lockfilePath));
 }

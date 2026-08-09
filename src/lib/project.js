@@ -17,14 +17,14 @@ export async function loadProjectSnapshot(projectDir) {
 
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   const lockfilePath = await findLockfilePath(resolvedDir);
-  const dependencyNames = collectDependencyNames(manifest);
+  const directDependencies = collectDirectDependencies(manifest);
+  const dependencyNames = directDependencies.map((dependency) => dependency.name).sort();
   const lockfile = lockfilePath
     ? annotateLockfile(
         parseLockfileContent(lockfilePath, await readFile(lockfilePath, "utf8")),
-        dependencyNames,
+        directDependencies,
       )
     : null;
-  const directDependencies = collectDirectDependencies(manifest);
 
   return {
     dir: resolvedDir,
@@ -182,7 +182,7 @@ export async function fileExists(filePath) {
 }
 
 async function findLockfilePath(projectDir) {
-  for (const name of ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml"]) {
+  for (const name of ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock"]) {
     const candidate = path.join(projectDir, name);
     if (await fileExists(candidate)) {
       return candidate;
@@ -193,7 +193,7 @@ async function findLockfilePath(projectDir) {
 }
 
 async function findGitLockfilePath(repoDir, ref, readGitFileImpl) {
-  for (const name of ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml"]) {
+  for (const name of ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock"]) {
     try {
       await readGitFileImpl(repoDir, ref, name);
       return name;
@@ -338,24 +338,53 @@ function sameSet(left, right) {
   return true;
 }
 
-function annotateLockfile(lockfile, dependencyNames) {
-  const dependencySet = new Set(dependencyNames);
+function annotateLockfile(lockfile, directDependencies) {
+  const dependencySet = new Set((directDependencies ?? []).map((dependency) => dependency.name));
   const directDependencyKeys = new Set(lockfile.directDependencyKeys ?? []);
 
   return {
     ...lockfile,
     packages: lockfile.packages.map((pkg) => {
       const isTopLevel = isTopLevelPackagePath(pkg.path);
+      const isDirectDependency =
+        directDependencyKeys.size > 0
+          ? matchesDirectDependencyKey(pkg, directDependencyKeys)
+          : lockfile.packageManager === "yarn"
+            ? matchesYarnDirectDependency(pkg, directDependencies)
+            : isTopLevel && dependencySet.has(pkg.name);
+
       return {
         ...pkg,
-        isTopLevel,
-        isDirectDependency:
-          directDependencyKeys.size > 0
-            ? directDependencyKeys.has(pkg.rawKey ?? `${pkg.name}@${pkg.version}`)
-            : isTopLevel && dependencySet.has(pkg.name),
+        path:
+          lockfile.packageManager === "yarn" && isDirectDependency
+            ? directDependencyPathForPackage(pkg.name)
+            : pkg.path,
+        isTopLevel: lockfile.packageManager === "yarn" ? isDirectDependency : isTopLevel,
+        isDirectDependency,
       };
     }),
   };
+}
+
+function matchesDirectDependencyKey(pkg, directDependencyKeys) {
+  const rawKeys = normalizePackageRawKeys(pkg);
+  if (rawKeys.length === 0) {
+    return directDependencyKeys.has(`${pkg.name}@${pkg.version}`);
+  }
+
+  return rawKeys.some((key) => directDependencyKeys.has(key));
+}
+
+function matchesYarnDirectDependency(pkg, directDependencies = []) {
+  const rawKeys = normalizePackageRawKeys(pkg);
+  if (rawKeys.length === 0) {
+    return directDependencies.some((dependency) => dependency.name === pkg.name);
+  }
+
+  const descriptors = rawKeys.map(parseYarnDescriptor);
+  return descriptors.some((descriptor) =>
+    directDependencies.some((dependency) => yarnDescriptorMatchesDependency(descriptor, dependency)),
+  );
 }
 
 function isTopLevelPackagePath(packagePath) {
@@ -391,5 +420,92 @@ function isRegistryDependencySpec(spec) {
 }
 
 function isDirectLockfilePath(targetPath) {
-  return /\.(?:json|ya?ml)$/iu.test(targetPath) && /(?:package-lock|npm-shrinkwrap|pnpm-lock)\./iu.test(targetPath);
+  return (
+    (/\.(?:json|ya?ml)$/iu.test(targetPath) &&
+      /(?:package-lock|npm-shrinkwrap|pnpm-lock)\./iu.test(targetPath)) ||
+    /(?:^|\/)yarn\.lock$/iu.test(targetPath)
+  );
+}
+
+function normalizePackageRawKeys(pkg) {
+  if (Array.isArray(pkg.rawKeys)) {
+    return pkg.rawKeys.map((value) => String(value));
+  }
+
+  if (typeof pkg.rawKey === "string" && pkg.rawKey.length > 0) {
+    return [pkg.rawKey];
+  }
+
+  return [];
+}
+
+function parseYarnDescriptor(rawDescriptor) {
+  const descriptor = String(rawDescriptor).trim().replace(/^['"]|['"]$/gu, "");
+  if (descriptor.length === 0) {
+    return {
+      name: null,
+      reference: null,
+    };
+  }
+
+  if (descriptor.startsWith("@")) {
+    const slashIndex = descriptor.indexOf("/");
+    if (slashIndex === -1) {
+      return {
+        name: descriptor,
+        reference: null,
+      };
+    }
+
+    const separatorIndex = descriptor.indexOf("@", slashIndex + 1);
+    if (separatorIndex === -1) {
+      return {
+        name: descriptor,
+        reference: null,
+      };
+    }
+
+    return {
+      name: descriptor.slice(0, separatorIndex),
+      reference: descriptor.slice(separatorIndex + 1) || null,
+    };
+  }
+
+  const separatorIndex = descriptor.indexOf("@");
+  if (separatorIndex === -1) {
+    return {
+      name: descriptor,
+      reference: null,
+    };
+  }
+
+  return {
+    name: descriptor.slice(0, separatorIndex),
+    reference: descriptor.slice(separatorIndex + 1) || null,
+  };
+}
+
+function yarnDescriptorMatchesDependency(descriptor, dependency) {
+  if (!descriptor.name || descriptor.name !== dependency?.name) {
+    return false;
+  }
+
+  const spec = typeof dependency.spec === "string" ? dependency.spec : "";
+  if (spec.length === 0 || !descriptor.reference) {
+    return true;
+  }
+
+  if (descriptor.reference === spec || descriptor.reference === `npm:${spec}`) {
+    return true;
+  }
+
+  if (spec.startsWith("npm:") && descriptor.reference === spec.slice(4)) {
+    return true;
+  }
+
+  return false;
+}
+
+function directDependencyPathForPackage(name) {
+  return `node_modules/${name}`;
 }

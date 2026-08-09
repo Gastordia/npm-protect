@@ -7,6 +7,7 @@ import {
   mergeInstallScriptApprovals,
   normalizeConfiguredInstallScriptApprovals,
 } from "./approvals.js";
+import { inspectLocalPolicyFile } from "./file-security.js";
 import { fileExists } from "./project.js";
 
 export const DEFAULT_CONFIG = {
@@ -15,6 +16,9 @@ export const DEFAULT_CONFIG = {
   allowedInstallScripts: [],
   approvals: {
     path: DEFAULT_APPROVAL_STORE_PATH,
+  },
+  service: {
+    rebuildSandbox: "auto",
   },
   services: {
     osv: {
@@ -33,6 +37,8 @@ export const DEFAULT_CONFIG = {
       timeoutMs: 10000,
       maxFilesPerPackage: 6,
       maxFileBytes: 65536,
+      maxTarballBytes: 5242880,
+      maxUnpackedBytes: 26214400,
       selection: "focused",
       maxPackages: 0,
     },
@@ -46,6 +52,7 @@ export const DEFAULT_CONFIG = {
     requireLockfile: true,
     unreviewedInstallScripts: true,
     missingIntegrity: false,
+    nonRegistryDirectDependencies: false,
     typosquatScoreThreshold: 0.85,
     vulnerabilitySeverityThreshold: "high",
     requireRegistrySignatures: false,
@@ -53,10 +60,12 @@ export const DEFAULT_CONFIG = {
     minPackageAgeDays: 0,
     suspiciousTarballIndicators: false,
     integrityMismatch: true,
+    trustedScopeNameCollisions: false,
   },
   warnRules: {
     suspiciousTyposquats: true,
     missingRepository: true,
+    nonRegistryDirectDependencies: true,
     knownVulnerabilities: true,
     missingRegistrySignatures: true,
     missingVerifiedAttestations: true,
@@ -65,6 +74,7 @@ export const DEFAULT_CONFIG = {
     auditSignaturesUnavailable: true,
     externalServiceFailures: true,
     expiredInstallScriptApprovals: true,
+    trustedScopeNameCollisions: true,
   },
 };
 
@@ -80,6 +90,9 @@ allowedInstallScripts:
 approvals:
   path: ".npm-protect/approvals.json"
 
+service:
+  rebuildSandbox: auto
+
 services:
   osv:
     enabled: false
@@ -93,6 +106,8 @@ services:
     timeoutMs: 10000
     maxFilesPerPackage: 6
     maxFileBytes: 65536
+    maxTarballBytes: 5242880
+    maxUnpackedBytes: 26214400
     selection: focused
     maxPackages: 0
   auditSignatures:
@@ -103,6 +118,7 @@ blockRules:
   requireLockfile: true
   unreviewedInstallScripts: true
   missingIntegrity: false
+  nonRegistryDirectDependencies: false
   typosquatScoreThreshold: 0.85
   vulnerabilitySeverityThreshold: high
   requireRegistrySignatures: false
@@ -110,10 +126,12 @@ blockRules:
   minPackageAgeDays: 0
   suspiciousTarballIndicators: false
   integrityMismatch: true
+  trustedScopeNameCollisions: false
 
 warnRules:
   suspiciousTyposquats: true
   missingRepository: true
+  nonRegistryDirectDependencies: true
   knownVulnerabilities: true
   missingRegistrySignatures: true
   missingVerifiedAttestations: true
@@ -122,6 +140,7 @@ warnRules:
   auditSignaturesUnavailable: true
   externalServiceFailures: true
   expiredInstallScriptApprovals: true
+  trustedScopeNameCollisions: true
 `;
 
 const CONFIG_FILENAMES = [
@@ -159,11 +178,13 @@ export async function loadConfig(projectDir, explicitPath = null) {
         ...configuredApprovals.validationErrors,
         ...approvalState.validationErrors,
       ],
+      securityWarnings: [...approvalState.securityWarnings],
     };
   }
 
   let rawConfig;
   const validationErrors = [];
+  const securityWarnings = await inspectLocalPolicyFile(source, "config file");
 
   try {
     const content = await readFile(source, "utf8");
@@ -198,6 +219,7 @@ export async function loadConfig(projectDir, explicitPath = null) {
       approvalState,
     },
     validationErrors,
+    securityWarnings: [...securityWarnings, ...approvalState.securityWarnings],
   };
 }
 
@@ -216,6 +238,15 @@ export function validateConfig(config) {
     errors.push("trustedScopes must be an array");
   }
 
+  if (Array.isArray(config.trustedScopes)) {
+    for (const scope of config.trustedScopes) {
+      if (typeof scope !== "string" || !/^@[^/\s]+$/u.test(scope.trim())) {
+        errors.push('trustedScopes entries must be scope strings like "@mycompany"');
+        break;
+      }
+    }
+  }
+
   if (
     config.allowedInstallScripts !== undefined &&
     !Array.isArray(config.allowedInstallScripts)
@@ -225,6 +256,10 @@ export function validateConfig(config) {
 
   if (config.approvals !== undefined && !isPlainObject(config.approvals)) {
     errors.push("approvals must be an object");
+  }
+
+  if (config.service !== undefined && !isPlainObject(config.service)) {
+    errors.push("service must be an object");
   }
 
   if (config.blockRules !== undefined && !isPlainObject(config.blockRules)) {
@@ -244,6 +279,14 @@ export function validateConfig(config) {
     (typeof config.approvals.path !== "string" || config.approvals.path.trim().length === 0)
   ) {
     errors.push("approvals.path must be a non-empty string");
+  }
+
+  const rebuildSandbox = config.service?.rebuildSandbox;
+  if (
+    rebuildSandbox !== undefined &&
+    !["off", "auto", "require"].includes(rebuildSandbox)
+  ) {
+    errors.push('service.rebuildSandbox must be one of "off", "auto", or "require"');
   }
 
   const threshold = config.blockRules?.typosquatScoreThreshold;
@@ -272,10 +315,38 @@ export function validateConfig(config) {
   }
 
   if (
+    config.blockRules?.nonRegistryDirectDependencies !== undefined &&
+    typeof config.blockRules.nonRegistryDirectDependencies !== "boolean"
+  ) {
+    errors.push("blockRules.nonRegistryDirectDependencies must be a boolean");
+  }
+
+  if (
     config.blockRules?.suspiciousTarballIndicators !== undefined &&
     typeof config.blockRules.suspiciousTarballIndicators !== "boolean"
   ) {
     errors.push("blockRules.suspiciousTarballIndicators must be a boolean");
+  }
+
+  if (
+    config.blockRules?.trustedScopeNameCollisions !== undefined &&
+    typeof config.blockRules.trustedScopeNameCollisions !== "boolean"
+  ) {
+    errors.push("blockRules.trustedScopeNameCollisions must be a boolean");
+  }
+
+  if (
+    config.warnRules?.nonRegistryDirectDependencies !== undefined &&
+    typeof config.warnRules.nonRegistryDirectDependencies !== "boolean"
+  ) {
+    errors.push("warnRules.nonRegistryDirectDependencies must be a boolean");
+  }
+
+  if (
+    config.warnRules?.trustedScopeNameCollisions !== undefined &&
+    typeof config.warnRules.trustedScopeNameCollisions !== "boolean"
+  ) {
+    errors.push("warnRules.trustedScopeNameCollisions must be a boolean");
   }
 
   if (config.services?.osv !== undefined && !isPlainObject(config.services.osv)) {
@@ -325,6 +396,22 @@ export function validateConfig(config) {
     (!Number.isInteger(maxFileBytes) || maxFileBytes <= 0)
   ) {
     errors.push("services.tarballs.maxFileBytes must be a positive integer");
+  }
+
+  const maxTarballBytes = config.services?.tarballs?.maxTarballBytes;
+  if (
+    maxTarballBytes !== undefined &&
+    (!Number.isInteger(maxTarballBytes) || maxTarballBytes <= 0)
+  ) {
+    errors.push("services.tarballs.maxTarballBytes must be a positive integer");
+  }
+
+  const maxUnpackedBytes = config.services?.tarballs?.maxUnpackedBytes;
+  if (
+    maxUnpackedBytes !== undefined &&
+    (!Number.isInteger(maxUnpackedBytes) || maxUnpackedBytes <= 0)
+  ) {
+    errors.push("services.tarballs.maxUnpackedBytes must be a positive integer");
   }
 
   const tarballSelection = config.services?.tarballs?.selection;
@@ -517,6 +604,10 @@ function mergeConfig(defaults, config) {
     approvals: {
       ...defaults.approvals,
       ...(isPlainObject(config.approvals) ? config.approvals : {}),
+    },
+    service: {
+      ...defaults.service,
+      ...(isPlainObject(config.service) ? config.service : {}),
     },
     services: {
       osv: {

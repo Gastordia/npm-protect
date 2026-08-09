@@ -266,6 +266,91 @@ test("runCli review warns on freshly published direct dependencies from registry
   }
 });
 
+test("runCli review reports trusted-scope name collisions from registry metadata", async () => {
+  const baseUrl = "https://mock.local";
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "npm-protect-trusted-scope-config-"));
+  const tempConfigPath = path.join(tempDir, "npm-protect.json");
+
+  try {
+    await writeFile(
+      tempConfigPath,
+      JSON.stringify(
+        {
+          trustedScopes: ["@mycompany"],
+          services: {
+            registry: {
+              enabled: true,
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const { output, exitCode } = await captureRun(async () => {
+      await runCli([
+        "review",
+        "--project",
+        path.join(fixturesDir, "online-project"),
+        "--config",
+        tempConfigPath,
+        "--registry-url",
+        baseUrl,
+        "--json",
+      ], {
+        fetchImpl: async (url) => {
+          if (String(url) === `${baseUrl}/react`) {
+            return jsonResponse({
+              time: {
+                "19.0.0": "2026-07-01T00:00:00.000Z",
+              },
+              versions: {
+                "19.0.0": {
+                  dist: {
+                    integrity: "sha512-local",
+                    signatures: [{ keyid: "SHA256:demo", sig: "demo" }],
+                  },
+                },
+              },
+            });
+          }
+
+          if (String(url) === `${baseUrl}/%40mycompany%2Freact`) {
+            return jsonResponse({
+              versions: {
+                "1.0.0": {
+                  dist: {
+                    integrity: "sha512-mycompany-react",
+                  },
+                },
+              },
+            });
+          }
+
+          return jsonResponse({ error: "not found" }, { status: 404 });
+        },
+        now: new Date("2026-08-08T00:00:00Z"),
+      });
+    });
+
+    const report = JSON.parse(output);
+    assert.equal(report.verdict, "warn");
+    assert.equal(report.stats.trustedScopeCollisions, 1);
+    assert.ok(
+      report.findings.some(
+        (finding) =>
+          finding.code === "trusted_scope_name_collision" &&
+          finding.packageName === "react",
+      ),
+    );
+    assert.equal(exitCode, undefined);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("runCli review supports pnpm lockfiles", async () => {
   const { output, exitCode } = await captureRun(async () => {
     await runCli([
@@ -281,6 +366,25 @@ test("runCli review supports pnpm lockfiles", async () => {
   assert.equal(report.stats.totalPackages, 2);
   assert.equal(report.stats.packagesWithInstallScripts, 1);
   assert.equal(report.riskVerdict, "block");
+  assert.equal(report.verdict, "warn");
+  assert.equal(exitCode, undefined);
+});
+
+test("runCli review supports yarn lockfiles", async () => {
+  const { output, exitCode } = await captureRun(async () => {
+    await runCli([
+      "review",
+      "--project",
+      path.join(fixturesDir, "yarn-project"),
+      "--json",
+    ]);
+  });
+
+  const report = JSON.parse(output);
+  assert.equal(report.project.lockfilePath.endsWith("yarn.lock"), true);
+  assert.equal(report.stats.totalPackages, 2);
+  assert.equal(report.stats.packagesWithInstallScripts, 0);
+  assert.equal(report.riskVerdict, "warn");
   assert.equal(report.verdict, "warn");
   assert.equal(exitCode, undefined);
 });
@@ -665,6 +769,115 @@ test("runCli install supports JSON output", async () => {
   assert.equal(exitCode, undefined);
 });
 
+test("runCli install emits pnpm-specific recommended steps", async () => {
+  const { output, exitCode } = await captureRun(async () => {
+    await runCli([
+      "install",
+      "--project",
+      path.join(fixturesDir, "pnpm-project"),
+      "--json",
+    ]);
+  });
+
+  const plan = JSON.parse(output);
+  assert.equal(plan.project.name, "pnpm-project");
+  assert.equal(plan.packageManager, "pnpm");
+  assert.match(plan.recommendedSteps[0], /^pnpm install --ignore-scripts$/);
+  assert.equal(exitCode, undefined);
+});
+
+test("runCli install emits yarn-specific recommended steps", async () => {
+  const { output, exitCode } = await captureRun(async () => {
+    await runCli([
+      "install",
+      "--project",
+      path.join(fixturesDir, "yarn-project"),
+      "--json",
+    ]);
+  });
+
+  const plan = JSON.parse(output);
+  assert.equal(plan.project.name, "yarn-project");
+  assert.equal(plan.packageManager, "yarn");
+  assert.match(plan.recommendedSteps[0], /^yarn install --ignore-scripts$/);
+  assert.equal(exitCode, undefined);
+});
+
+test("runCli install can recover and approve yarn lifecycle-script packages from tarballs", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "npm-protect-yarn-install-config-"));
+  const configPath = path.join(tempDir, "npm-protect.json");
+
+  try {
+    await writeFile(
+      configPath,
+      JSON.stringify(
+        {
+          allowedInstallScripts: ["esbuild@0.25.0"],
+          services: {
+            tarballs: {
+              enabled: true,
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const { output, exitCode } = await captureRun(async () => {
+      await runCli([
+        "install",
+        "--project",
+        path.join(fixturesDir, "yarn-project"),
+        "--config",
+        configPath,
+        "--json",
+      ], {
+        fetchImpl: async (url) => {
+          if (String(url) === "https://registry.npmjs.org/esbuild/-/esbuild-0.25.0.tgz") {
+            return bufferResponse(
+              createTarball({
+                "package/package.json": JSON.stringify({
+                  name: "esbuild",
+                  version: "0.25.0",
+                  scripts: {
+                    install: "node install.js",
+                  },
+                }),
+                "package/install.js": "console.log('hello');",
+              }),
+            );
+          }
+
+          if (String(url) === "https://registry.npmjs.org/react/-/react-19.0.0.tgz") {
+            return bufferResponse(
+              createTarball({
+                "package/package.json": JSON.stringify({
+                  name: "react",
+                  version: "19.0.0",
+                }),
+              }),
+            );
+          }
+
+          return jsonResponse({ error: "not found" }, { status: 404 });
+        },
+      });
+    });
+
+    const plan = JSON.parse(output);
+    assert.equal(plan.packageManager, "yarn");
+    assert.equal(plan.stats.recoveredLifecycleScriptPackages, 1);
+    assert.equal(plan.stats.approvedPackages, 1);
+    assert.equal(plan.stats.unapprovedPackages, 0);
+    assert.match(plan.recommendedSteps[1], /^npm rebuild esbuild@0\.25\.0$/);
+    assert.equal(exitCode, undefined);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("runCli install can recover hidden lifecycle scripts from tarballs", async () => {
   const { output, exitCode } = await captureRun(async () => {
     await runCli([
@@ -765,7 +978,7 @@ test("runCli install can approve recovered lifecycle-script packages from config
     assert.equal(plan.stats.unapprovedPackages, 0);
     assert.equal(plan.approved[0].source, "tarball");
     assert.deepEqual(plan.approved[0].scriptNames, ["install"]);
-    assert.match(plan.recommendedSteps[1], /^npm rebuild react$/);
+    assert.match(plan.recommendedSteps[1], /^npm rebuild react@19\.0\.0$/);
     assert.equal(exitCode, undefined);
   } finally {
     await rm(tempDir, { recursive: true, force: true });

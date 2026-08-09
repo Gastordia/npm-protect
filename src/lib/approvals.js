@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { inspectLocalPolicyFile } from "./file-security.js";
 import { fileExists } from "./project.js";
 
 export const DEFAULT_APPROVAL_STORE_PATH = ".npm-protect/approvals.json";
@@ -20,10 +21,12 @@ export async function loadInstallScriptApprovalStore(projectDir, approvalSetting
         installScripts: [],
       },
       validationErrors: [],
+      securityWarnings: [],
     };
   }
 
   let raw;
+  const securityWarnings = await inspectLocalPolicyFile(storePath, "approval store");
 
   try {
     raw = JSON.parse(await readFile(storePath, "utf8"));
@@ -37,6 +40,7 @@ export async function loadInstallScriptApprovalStore(projectDir, approvalSetting
       validationErrors: [
         `unable to parse approval store ${storePath}: ${error instanceof Error ? error.message : String(error)}`,
       ],
+      securityWarnings,
     };
   }
 
@@ -51,6 +55,7 @@ export async function loadInstallScriptApprovalStore(projectDir, approvalSetting
     expiredApprovals: parsed.expiredApprovals,
     raw,
     validationErrors: parsed.validationErrors,
+    securityWarnings,
   };
 }
 
@@ -73,6 +78,7 @@ export async function writeInstallScriptApprovalStore(
     ),
     "utf8",
   );
+  await chmod(storePath, 0o600);
 
   return storePath;
 }

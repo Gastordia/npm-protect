@@ -75,6 +75,7 @@ async function runPolicyValidate(args) {
   const state = await loadConfig(projectDir, configPath);
   const extraErrors = validateConfig(state.rawConfig);
   const validationErrors = [...state.validationErrors, ...extraErrors];
+  const securityWarnings = state.securityWarnings ?? [];
 
   if (outputJson) {
     console.log(
@@ -84,6 +85,7 @@ async function runPolicyValidate(args) {
           config: state.config,
           valid: validationErrors.length === 0,
           errors: validationErrors,
+          warnings: securityWarnings,
         },
         null,
         2,
@@ -96,6 +98,13 @@ async function runPolicyValidate(args) {
       console.log("");
       for (const error of validationErrors) {
         console.log(`- ${error}`);
+      }
+    }
+    if (securityWarnings.length > 0) {
+      console.log("");
+      console.log("Warnings:");
+      for (const warning of securityWarnings) {
+        console.log(`- ${warning}`);
       }
     }
   }

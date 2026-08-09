@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -60,6 +60,42 @@ test("loadConfig merges nested service settings", async () => {
   assert.equal(state.config.blockRules.vulnerabilitySeverityThreshold, "critical");
 });
 
+test("loadConfig validates trustedScopes entries", async () => {
+  const projectDir = await mkdtemp(path.join(tmpdir(), "npm-protect-config-trusted-scopes-"));
+  await writeFile(
+    path.join(projectDir, "npm-protect.yml"),
+    [
+      "trustedScopes:",
+      "  - mycompany",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const state = await loadConfig(projectDir);
+
+  assert.ok(
+    state.validationErrors.some((error) => /trustedScopes entries must be scope strings/u.test(error)),
+  );
+});
+
+test("loadConfig validates service rebuildSandbox values", async () => {
+  const projectDir = await mkdtemp(path.join(tmpdir(), "npm-protect-config-service-"));
+  await writeFile(
+    path.join(projectDir, "npm-protect.yml"),
+    [
+      "service:",
+      "  rebuildSandbox: strict",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const state = await loadConfig(projectDir);
+
+  assert.ok(
+    state.validationErrors.some((error) => /service\.rebuildSandbox must be one of/u.test(error)),
+  );
+});
+
 test("loadConfig merges install-script approvals from the approval store", async () => {
   const projectDir = await mkdtemp(path.join(tmpdir(), "npm-protect-config-approvals-"));
   await mkdir(path.join(projectDir, ".npm-protect"), { recursive: true });
@@ -109,4 +145,35 @@ test("loadConfig merges install-script approvals from the approval store", async
       (entry) => entry.name === "sharp" && entry.version === "0.34.0" && entry.source === "store",
     ),
   );
+});
+
+test("loadConfig reports insecure local policy file permissions as warnings", async () => {
+  const projectDir = await mkdtemp(path.join(tmpdir(), "npm-protect-config-security-"));
+  const configPath = path.join(projectDir, "npm-protect.yml");
+  const approvalDir = path.join(projectDir, ".npm-protect");
+  const approvalPath = path.join(approvalDir, "approvals.json");
+
+  await mkdir(approvalDir, { recursive: true });
+  await writeFile(configPath, "mode: enforce\n", "utf8");
+  await writeFile(
+    approvalPath,
+    JSON.stringify(
+      {
+        version: 1,
+        installScripts: [],
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  await chmod(configPath, 0o666);
+  await chmod(approvalPath, 0o666);
+
+  const state = await loadConfig(projectDir);
+
+  assert.equal(state.validationErrors.length, 0);
+  assert.equal(state.securityWarnings.length, 2);
+  assert.ok(state.securityWarnings.some((warning) => warning.includes(configPath)));
+  assert.ok(state.securityWarnings.some((warning) => warning.includes(approvalPath)));
 });

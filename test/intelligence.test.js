@@ -157,6 +157,79 @@ test("collectExternalIntelligence warns on very fresh package releases", async (
   );
 });
 
+test("collectExternalIntelligence warns when unscoped direct dependencies collide with trusted-scope package names", async () => {
+  const project = await loadProjectSnapshot(path.join(fixturesDir, "online-project"));
+  const baseUrl = "https://mock.local";
+  const config = {
+    ...DEFAULT_CONFIG,
+    trustedScopes: ["@mycompany"],
+    services: {
+      ...DEFAULT_CONFIG.services,
+      registry: {
+        enabled: true,
+        url: baseUrl,
+        timeoutMs: 2000,
+        warnPackageAgeDays: 14,
+      },
+    },
+  };
+
+  const intelligence = await collectExternalIntelligence(project, config, {
+    now: new Date("2026-08-08T00:00:00Z"),
+    fetchImpl: async (url) => {
+      if (String(url) === `${baseUrl}/react`) {
+        return jsonResponse({
+          time: {
+            "19.0.0": "2026-07-01T00:00:00.000Z",
+          },
+          versions: {
+            "19.0.0": {
+              dist: {
+                integrity: "sha512-local",
+                signatures: [{ keyid: "SHA256:demo", sig: "demo" }],
+              },
+            },
+          },
+        });
+      }
+
+      if (String(url) === `${baseUrl}/%40mycompany%2Freact`) {
+        return jsonResponse({
+          versions: {
+            "1.0.0": {
+              dist: {
+                integrity: "sha512-mycompany-react",
+              },
+            },
+          },
+        });
+      }
+
+      return jsonResponse({ error: "not found" }, { status: 404 });
+    },
+  });
+
+  assert.equal(intelligence.stats.directPackagesCheckedAgainstRegistry, 1);
+  assert.equal(intelligence.stats.trustedScopeCollisions, 1);
+  assert.ok(
+    intelligence.findings.some(
+      (finding) =>
+        finding.code === "trusted_scope_name_collision" &&
+        finding.severity === "warn" &&
+        finding.packageName === "react" &&
+        finding.details.trustedScopePackage === "@mycompany/react",
+    ),
+  );
+  assert.ok(
+    intelligence.sources.some(
+      (source) =>
+        source.name === "registry" &&
+        source.status === "ok" &&
+        source.trustedScopeCollisions === 1,
+    ),
+  );
+});
+
 test("collectExternalIntelligence maps npm audit signatures output into findings", async () => {
   const project = await loadProjectSnapshot(path.join(fixturesDir, "online-project"));
   const config = {
@@ -439,6 +512,121 @@ test("collectExternalIntelligence can inspect all registry packages when tarball
   assert.ok(requests.includes("https://registry.npmjs.org/helper-lib/-/helper-lib-1.0.0.tgz"));
 });
 
+test("collectExternalIntelligence enforces tarball download size limits", async () => {
+  const project = await loadProjectSnapshot(path.join(fixturesDir, "block-project"));
+  const tarball = createTarball({
+    "package/package.json": JSON.stringify({
+      name: "esbuild",
+      version: "0.25.0",
+      scripts: {
+        install: "node install.js",
+      },
+    }),
+    "package/install.js": "console.log('hello');",
+  });
+  const config = {
+    ...DEFAULT_CONFIG,
+    services: {
+      ...DEFAULT_CONFIG.services,
+      tarballs: {
+        enabled: true,
+        timeoutMs: 2000,
+        maxFilesPerPackage: 4,
+        maxFileBytes: 65536,
+        maxTarballBytes: Math.max(1, tarball.length - 1),
+        maxUnpackedBytes: 26214400,
+      },
+    },
+  };
+
+  const intelligence = await collectExternalIntelligence(project, config, {
+    fetchImpl: async (url) => {
+      if (String(url) === "https://registry.npmjs.org/esbuild/-/esbuild-0.25.0.tgz") {
+        return bufferResponse(tarball, {
+          headers: {
+            "content-length": String(tarball.length),
+          },
+        });
+      }
+
+      return jsonResponse({ error: "not found" }, { status: 404 });
+    },
+  });
+
+  assert.equal(intelligence.stats.tarballsInspected, 0);
+  assert.ok(
+    intelligence.findings.some(
+      (finding) =>
+        finding.code === "tarball_analysis_failed" &&
+        /configured limit/u.test(finding.message),
+    ),
+  );
+  assert.ok(
+    intelligence.sources.some(
+      (source) =>
+        source.name === "tarballs" &&
+        source.status === "issues" &&
+        source.failedPackages === 1,
+    ),
+  );
+});
+
+test("collectExternalIntelligence enforces tarball unpacked size limits", async () => {
+  const project = await loadProjectSnapshot(path.join(fixturesDir, "block-project"));
+  const config = {
+    ...DEFAULT_CONFIG,
+    services: {
+      ...DEFAULT_CONFIG.services,
+      tarballs: {
+        enabled: true,
+        timeoutMs: 2000,
+        maxFilesPerPackage: 4,
+        maxFileBytes: 65536,
+        maxTarballBytes: 5242880,
+        maxUnpackedBytes: 128,
+      },
+    },
+  };
+
+  const intelligence = await collectExternalIntelligence(project, config, {
+    fetchImpl: async (url) => {
+      if (String(url) === "https://registry.npmjs.org/esbuild/-/esbuild-0.25.0.tgz") {
+        return bufferResponse(
+          createTarball({
+            "package/package.json": JSON.stringify({
+              name: "esbuild",
+              version: "0.25.0",
+              scripts: {
+                install: "node install.js",
+              },
+            }),
+            "package/install.js": "a".repeat(4096),
+          }),
+        );
+      }
+
+      return jsonResponse({ error: "not found" }, { status: 404 });
+    },
+  });
+
+  assert.equal(intelligence.stats.tarballsInspected, 1);
+  assert.ok(
+    intelligence.findings.some(
+      (finding) =>
+        finding.code === "tarball_analysis_failed" &&
+        /decompressed tarball exceeds/u.test(finding.message),
+    ),
+  );
+  assert.ok(
+    intelligence.sources.some(
+      (source) =>
+        source.name === "tarballs" &&
+        source.status === "issues" &&
+        source.failedPackages === 1,
+    ),
+  );
+});
+
 test("collectExternalIntelligence reuses cached registry and tarball responses", async () => {
   const project = await loadProjectSnapshot(path.join(fixturesDir, "block-project"));
   const cacheDir = await mkdtemp(path.join(os.tmpdir(), "npm-protect-cache-"));
@@ -543,9 +731,17 @@ function jsonResponse(body, options = {}) {
 }
 
 function bufferResponse(buffer, options = {}) {
+  const headerMap = new Map(
+    Object.entries(options.headers ?? {}).map(([key, value]) => [String(key).toLowerCase(), String(value)]),
+  );
   return {
     ok: (options.status ?? 200) >= 200 && (options.status ?? 200) < 300,
     status: options.status ?? 200,
+    headers: {
+      get(name) {
+        return headerMap.get(String(name).toLowerCase()) ?? null;
+      },
+    },
     async arrayBuffer() {
       return buffer;
     },

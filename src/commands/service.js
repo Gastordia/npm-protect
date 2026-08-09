@@ -68,11 +68,16 @@ async function runServiceInstall(args, options) {
   console.log(`Primary npm wrapper: ${installResult.wrapperPath}`);
   console.log(`CLI path: ${installResult.cliPath}`);
   console.log(`Real npm path: ${installResult.realNpmPath ?? "(resolved at runtime)"}`);
+  console.log(`Node absolute-path hook: ${installResult.nodeHookPath}`);
+  console.log(`Activation script: ${installResult.envScriptPath}`);
 
   if (!installResult.pathActive) {
     console.log("");
-    console.log("Add this to your shell profile so the wrapper is used first:");
-    console.log(installResult.shellSnippet);
+    console.log("Add this to your shell profile for full wrapper activation and Node child-process interception:");
+    console.log(installResult.activationSnippet);
+    console.log("");
+    console.log("PATH-only fallback:");
+    console.log(installResult.pathShellSnippet);
   }
 }
 
@@ -95,10 +100,16 @@ async function runServiceStatus(args, options) {
   console.log(`PATH active: ${status.pathActive ? "yes" : "no"}`);
   console.log(`Current npm path: ${status.currentNpmPath ?? "(unresolved)"}`);
   console.log(`Protection active: ${status.active ? "yes" : "no"}`);
+  console.log(
+    `Node absolute-path guard: ${status.absolutePathProtection?.active ? "active" : "inactive"} (${status.absolutePathProtection?.provider ?? "unknown"})`,
+  );
+  console.log(
+    `Approved rebuild sandbox: ${status.rebuildSandboxSupport?.available ? "available" : "unavailable"} (${status.rebuildSandboxSupport?.provider ?? "unknown"})`,
+  );
 
   for (const wrapper of status.wrappers) {
     console.log(
-      `- ${wrapper.name}: installed=${wrapper.wrapperExists ? "yes" : "no"} active=${wrapper.active ? "yes" : "no"} current=${wrapper.currentPath ?? "(unresolved)"}`,
+      `- ${wrapper.name}: installed=${wrapper.wrapperExists ? "yes" : "no"} managed=${wrapper.managed ? "yes" : "no"} present=${wrapper.fileExists ? "yes" : "no"} active=${wrapper.active ? "yes" : "no"} current=${wrapper.currentPath ?? "(unresolved)"}`,
     );
   }
 }
@@ -129,10 +140,24 @@ async function runServiceDoctor(args, options) {
       code: "path_not_active",
       message: `${status.binDir} is not the first PATH entry, so the protection wrappers will be bypassed`,
     });
-    recommendations.push(`Add \`export PATH="${status.binDir}:$PATH"\` to your shell profile.`);
+    recommendations.push(
+      `Source \`${status.envScriptPath}\` from your shell profile to enable wrapper PATH priority and Node child-process interception.`,
+    );
   }
 
   for (const wrapper of status.wrappers) {
+    if (wrapper.fileExists && !wrapper.managed) {
+      issues.push({
+        severity: wrapper.name === "npm" ? "error" : "warn",
+        code: "wrapper_unmanaged",
+        message: `${wrapper.name} exists at ${wrapper.wrapperPath}, but it is not an npm-protect managed wrapper`,
+      });
+      recommendations.push(
+        `Move or remove the conflicting ${wrapper.name} file at ${wrapper.wrapperPath}, then run \`npm-protect service install\` again.`,
+      );
+      continue;
+    }
+
     if (!wrapper.wrapperExists) {
       issues.push({
         severity: "warn",
@@ -149,6 +174,36 @@ async function runServiceDoctor(args, options) {
         message: `${wrapper.name} is resolving to ${wrapper.currentPath ?? "(unresolved)"} instead of the npm-protect wrapper`,
       });
     }
+  }
+
+  if (!status.absolutePathProtection?.hookExists || !status.absolutePathProtection?.envScriptExists) {
+    issues.push({
+      severity: "warn",
+      code: "absolute_path_hook_missing",
+      message: `Node child-process interception helper files are missing from ${status.binDir}`,
+    });
+    recommendations.push("Run `npm-protect service install` again to recreate the activation helpers.");
+  } else if (!status.absolutePathProtection.active) {
+    issues.push({
+      severity: "warn",
+      code: "absolute_path_protection_inactive",
+      message:
+        "absolute npm, npx, pnpm, yarn, or corepack invocations from Node-based tools can still bypass the wrappers because the activation script is not loaded",
+    });
+    recommendations.push(
+      `Source \`${status.envScriptPath}\` from your shell profile to catch absolute package-manager invocations spawned by Node-based tools.`,
+    );
+  }
+
+  if (!status.rebuildSandboxSupport?.available) {
+    issues.push({
+      severity: "warn",
+      code: "rebuild_sandbox_unavailable",
+      message: status.rebuildSandboxSupport?.message ?? "approved rebuild sandbox support is unavailable",
+    });
+    recommendations.push(
+      'Install bubblewrap (`bwrap`) to isolate approved install-script rebuilds, or set `service.rebuildSandbox: "require"` to fail closed when sandboxing is unavailable.',
+    );
   }
 
   if (recommendations.length === 0) {
@@ -173,6 +228,12 @@ async function runServiceDoctor(args, options) {
   console.log(`Primary npm wrapper: ${status.wrapperPath}`);
   console.log(`PATH active: ${status.pathActive ? "yes" : "no"}`);
   console.log(`Protection active: ${status.active ? "yes" : "no"}`);
+  console.log(
+    `Node absolute-path guard: ${status.absolutePathProtection?.active ? "active" : "inactive"} (${status.absolutePathProtection?.provider ?? "unknown"})`,
+  );
+  console.log(
+    `Approved rebuild sandbox: ${status.rebuildSandboxSupport?.available ? "available" : "unavailable"} (${status.rebuildSandboxSupport?.provider ?? "unknown"})`,
+  );
   console.log("");
   if (issues.length === 0) {
     console.log("No service issues detected.");
@@ -206,6 +267,10 @@ async function runServiceUninstall(args, options) {
 
   for (const wrapper of result.skippedWrappers) {
     console.log(`Skipped ${wrapper.wrapperPath} because it is not an npm-protect managed wrapper`);
+  }
+
+  for (const helperPath of result.removedHelperFiles ?? []) {
+    console.log(`Removed ${helperPath}`);
   }
 
   console.log(`Removed ${result.manifestPath}`);

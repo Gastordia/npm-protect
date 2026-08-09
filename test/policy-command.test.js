@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -77,9 +77,11 @@ test("policy approve, list, and revoke manage install-script approvals", async (
 
     const approvalPath = path.join(projectDir, ".npm-protect", "approvals.json");
     const stored = JSON.parse(await readFile(approvalPath, "utf8"));
+    const approvalStats = await stat(approvalPath);
     assert.equal(stored.installScripts.length, 1);
     assert.equal(stored.installScripts[0].package, "esbuild");
     assert.equal(stored.installScripts[0].version, "0.25.0");
+    assert.equal(approvalStats.mode & 0o777, 0o600);
 
     const { output } = await captureRun(async () => {
       await runCli([

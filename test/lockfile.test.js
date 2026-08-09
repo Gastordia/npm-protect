@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseLockfile, parsePnpmLockfile } from "../src/lib/lockfile.js";
+import { parseLockfile, parsePnpmLockfile, parseYarnLockfile } from "../src/lib/lockfile.js";
 
 test("parseLockfile handles npm lockfile v3 packages", () => {
   const parsed = parseLockfile({
@@ -93,4 +93,57 @@ packages:
   assert.equal(parsed.packages[0].hasInstallScript, true);
   assert.equal(parsed.packages[0].path, "node_modules/esbuild");
   assert.equal(parsed.packages[1].integrity, "sha512-react");
+});
+
+test("parseYarnLockfile handles classic yarn lockfiles", () => {
+  const parsed = parseYarnLockfile(`
+# yarn lockfile v1
+
+esbuild@0.25.0:
+  version "0.25.0"
+  resolved "https://registry.npmjs.org/esbuild/-/esbuild-0.25.0.tgz#deadbeef"
+  integrity sha512-esbuild
+  dependencies:
+    helper "^1.0.0"
+
+"@scope/pkg@^2.0.0", "@scope/pkg@^2.1.0":
+  version "2.1.0"
+  resolved "https://registry.npmjs.org/@scope/pkg/-/pkg-2.1.0.tgz#cafebabe"
+`);
+
+  assert.equal(parsed.packageManager, "yarn");
+  assert.equal(parsed.lockfileVersion, 1);
+  assert.equal(parsed.packageCount, 2);
+  assert.equal(parsed.packages[0].name, "esbuild");
+  assert.equal(parsed.packages[0].resolved, "https://registry.npmjs.org/esbuild/-/esbuild-0.25.0.tgz");
+  assert.equal(parsed.packages[0].dependencyCount, 1);
+  assert.deepEqual(parsed.packages[1].rawKeys, ["@scope/pkg@^2.0.0", "@scope/pkg@^2.1.0"]);
+});
+
+test("parseYarnLockfile handles modern yarn lockfiles", () => {
+  const parsed = parseYarnLockfile(`
+__metadata:
+  version: 8
+  cacheKey: 10
+
+"esbuild@npm:^0.25.0":
+  version: 0.25.0
+  resolution: "esbuild@npm:0.25.0"
+  checksum: 10/abcdef
+  dependencies:
+    react: "npm:^19.0.0"
+
+"react@npm:^19.0.0":
+  version: 19.0.0
+  resolution: "react@npm:19.0.0"
+`);
+
+  assert.equal(parsed.packageManager, "yarn");
+  assert.equal(parsed.lockfileVersion, 8);
+  assert.equal(parsed.packageCount, 2);
+  assert.equal(parsed.packages[0].name, "esbuild");
+  assert.equal(parsed.packages[0].version, "0.25.0");
+  assert.equal(parsed.packages[0].resolved, "https://registry.npmjs.org/esbuild/-/esbuild-0.25.0.tgz");
+  assert.equal(parsed.packages[0].dependencyCount, 1);
+  assert.deepEqual(parsed.packages[0].rawKeys, ["esbuild@npm:^0.25.0"]);
 });

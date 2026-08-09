@@ -1,0 +1,11 @@
+# yarn lockfile v1
+
+esbuild@0.25.0:
+  version "0.25.0"
+  resolved "https://registry.npmjs.org/esbuild/-/esbuild-0.25.0.tgz#deadbeef"
+  integrity sha512-esbuild
+
+react@19.0.0:
+  version "19.0.0"
+  resolved "https://registry.npmjs.org/react/-/react-19.0.0.tgz#cafebabe"
+  integrity sha512-react

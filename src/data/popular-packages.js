@@ -2,6 +2,7 @@ export const POPULAR_PACKAGES = [
   "axios",
   "chalk",
   "commander",
+  "cross-env",
   "dotenv",
   "esbuild",
   "eslint",

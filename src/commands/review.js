@@ -27,6 +27,7 @@ export async function runReviewCommand(args, options = {}) {
   });
   const report = evaluateProjectWithIntelligence(project, configState.config, {
     validationErrors: configState.validationErrors,
+    securityWarnings: configState.securityWarnings,
     intelligence,
   });
 
