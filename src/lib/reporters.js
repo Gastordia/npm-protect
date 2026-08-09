@@ -64,8 +64,8 @@ function formatReviewText(report) {
   const lines = [
     `Project: ${report.project.name ?? "(unnamed project)"}${report.project.version ? `@${report.project.version}` : ""}`,
     `Directory: ${report.project.dir}`,
-    `Verdict: ${report.verdict}`,
-    `Risk: ${report.riskVerdict}`,
+    `Decision: ${formatDecision(report.verdict)}`,
+    `Risk level: ${formatRiskLevel(report.riskVerdict)}`,
     "",
     `Packages: ${report.stats.totalPackages}`,
     `Direct dependencies: ${report.stats.directDependencyCount}`,
@@ -141,8 +141,10 @@ function formatReviewText(report) {
 
   lines.push("", "Findings:");
   for (const finding of report.findings) {
-    const prefix = finding.severity.toUpperCase().padEnd(5, " ");
-    lines.push(`- ${prefix} ${finding.code}: ${finding.message}`);
+    const prefix = formatFindingSeverity(finding.severity).padEnd(6, " ");
+    const code =
+      finding.code === "unreviewed_install_script" ? "approval_required" : finding.code;
+    lines.push(`- ${prefix} ${code}: ${finding.message}`);
     const context = formatFindingContext(finding);
     if (context) {
       lines.push(`        ${context}`);
@@ -150,6 +152,36 @@ function formatReviewText(report) {
   }
 
   return lines.join("\n");
+}
+
+function formatDecision(verdict) {
+  if (verdict === "block") {
+    return "BLOCKED";
+  }
+  if (verdict === "warn") {
+    return "REVIEW REQUIRED";
+  }
+  return "ALLOWED";
+}
+
+function formatRiskLevel(riskVerdict) {
+  if (riskVerdict === "block") {
+    return "HIGH";
+  }
+  if (riskVerdict === "warn") {
+    return "MEDIUM";
+  }
+  return "NONE";
+}
+
+function formatFindingSeverity(severity) {
+  if (severity === "error") {
+    return "BLOCK";
+  }
+  if (severity === "warn") {
+    return "REVIEW";
+  }
+  return "INFO";
 }
 
 function formatDiffText(report) {

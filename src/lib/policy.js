@@ -120,7 +120,7 @@ export function evaluateProjectWithIntelligence(project, config, options = {}) {
       findings.push({
         severity: config.blockRules.unreviewedInstallScripts ? "error" : "warn",
         code: "unreviewed_install_script",
-        message: `${pkg.name}@${pkg.version} has install-time scripts and is not approved`,
+        message: `${pkg.name}@${pkg.version} contains install-time scripts that require explicit approval; this is not proof that the package is malicious`,
         packageName: pkg.name,
         packageVersion: pkg.version,
         packagePath: pkg.path,

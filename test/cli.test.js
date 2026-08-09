@@ -61,6 +61,24 @@ test("runCli review sets exit code 2 for enforce-mode blocking findings", async 
   assert.equal(exitCode, 2);
 });
 
+test("runCli review text separates risk level from enforcement decision", async () => {
+  const { output, exitCode } = await captureRun(async () => {
+    await runCli([
+      "review",
+      "--project",
+      path.join(fixturesDir, "block-project"),
+    ]);
+  });
+
+  assert.match(output, /^Decision: BLOCKED$/mu);
+  assert.match(output, /^Risk level: HIGH$/mu);
+  assert.match(output, /BLOCK\s+approval_required:/u);
+  assert.match(output, /this is not proof that the package is malicious/u);
+  assert.doesNotMatch(output, /^Verdict:/mu);
+  assert.doesNotMatch(output, /^Risk:/mu);
+  assert.equal(exitCode, 2);
+});
+
 test("runCli publish-check reports unsafe publishing workflow signals", async () => {
   const { output, exitCode } = await captureRun(async () => {
     await runCli([

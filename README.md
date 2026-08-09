@@ -291,6 +291,10 @@ by shell configuration.
 - `riskVerdict`: the raw risk based on findings
 - `verdict`: the enforced outcome after applying policy mode
 
+The terminal view translates those machine-facing values into clearer language such as
+`Risk level: HIGH` and `Decision: BLOCKED`. JSON and SARIF retain the stable `riskVerdict`
+and `verdict` fields for automation.
+
 In `warn` mode, blocking findings are still surfaced, but the enforced verdict is downgraded to `warn`.
 In `enforce` mode, blocking findings produce a `block` verdict and a process exit code of `2`.
 
