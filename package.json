@@ -1,7 +1,7 @@
 {
   "name": "npm-protect",
   "version": "0.1.0",
-  "description": "Dependency firewall for npm supply-chain review",
+  "description": "Protects against malicious npm packages before they can run on your machine or CI.",
   "type": "module",
   "private": true,
   "repository": {
@@ -31,15 +31,21 @@
   "engines": {
     "node": ">=22.0.0"
   },
+  "keywords": [
+    "npm",
+    "npx",
+    "supply-chain-security",
+    "dependency-security",
+    "javascript-security",
+    "llm-security",
+    "devsecops"
+  ],
   "license": "MIT",
   "files": [
     "action.yml",
     "bin",
     "scripts",
     "src",
-    "README.md",
-    "ARCHITECTURE.md",
-    "MILESTONES.md",
-    "PRODUCT_PLAN.md"
+    "README.md"
   ]
 }
