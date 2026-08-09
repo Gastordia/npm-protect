@@ -298,7 +298,7 @@ test("runCli review supports markdown output", async () => {
   });
 
   assert.match(output, /# npm-protect review/);
-  assert.match(output, /\| Severity \| Code \| Package \| Message \|/);
+  assert.match(output, /\| Severity \| Code \| Package \| Path \| Evidence \| Message \|/);
   assert.match(output, /suspicious_typosquat/);
   assert.equal(exitCode, undefined);
 });

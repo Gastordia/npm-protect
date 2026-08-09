@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run tests
+        run: npm test
+      - name: Run npm audit
+        run: npm audit --audit-level=high
+      - name: Validate policy defaults
+        run: node ./bin/npm-protect.js policy validate --json
+      - name: Self-review repo
+        run: node ./bin/npm-protect.js review --json

@@ -26,6 +26,7 @@ the package request is still intercepted before unsafe code is allowed to run.
 - missing or invalid npm registry signatures and provenance attestations
 - suspicious published tarballs that look like droppers, credential grabbers, or install-time loaders
 - one-off remote package execution through `npx`, `npm exec`, `npm create`, `pnpm dlx`, or `yarn dlx`
+- stale or overly broad install-script exceptions that stay approved forever
 - unsafe global installs performed outside a project review context
 
 ## Attack Coverage And Mitigations
@@ -40,6 +41,7 @@ the package request is still intercepted before unsafe code is allowed to run.
 | Known vulnerable dependencies | Pull in a package with a public security advisory | Warns or blocks based on policy severity | OSV batch lookup against resolved dependencies |
 | Missing signatures or provenance | Publish unsigned or unattested releases | Warns or blocks when registry signature or attestation evidence is missing or invalid | Registry metadata verification plus optional `npm audit signatures --include-attestations` |
 | Hidden tarball behavior | Ship downloader, eval, child-process, or network logic in published files | Surfaces suspicious packages even when the lockfile metadata looks normal | Tarball inspection for downloader, inline-eval, environment-access, child-process, and network-use indicators |
+| Long-lived install-script exceptions | Approve a package once and forget it forever | Supports stored approvals with optional expiry and revoke flows | Approval store entries with timestamps, expiry, and operator review notes |
 | One-off package execution | Use `npx`, `npm exec`, `pnpm dlx`, or `yarn dlx` to fetch and run a package immediately | Reviews the requested package spec in a temporary project before execution | Preflight lockfile resolution with `--ignore-scripts`, then the normal review pipeline |
 | Unsafe automation installs | Let an agent run `npm install` blindly | Intercepts package-changing npm commands and reviews the resulting dependency state first | Always-on wrapper that previews changes, evaluates risk, and restores files on block |
 | Unsupported package-manager mutation | Use `pnpm add` or `yarn install` when native lockfile mediation is not available yet | Blocks the command instead of pretending it is safely reviewed | Fail-closed interception for unsupported mutating managers |
@@ -71,6 +73,7 @@ The current repository already implements:
 - optional OSV, registry, tarball, and signature intelligence
 - hidden lifecycle-script recovery from published tarballs
 - safer install planning and always-on `npm` and `npx`-family mediation
+- approval-store backed install-script exceptions with expiry and revoke flows
 - GitHub Action, SARIF, markdown, and file output support
 - CycloneDX SBOM export
 - local policy loading and validation
@@ -84,12 +87,14 @@ Install always-on protection:
 ```bash
 node ./bin/npm-protect.js service install
 node ./bin/npm-protect.js service status
+node ./bin/npm-protect.js service doctor
 ```
 
 Review a project manually:
 
 ```bash
 node ./bin/npm-protect.js review --online --inspect-tarballs
+node ./bin/npm-protect.js review --inspect-tarballs=all
 node ./bin/npm-protect.js review --audit-signatures
 ```
 
@@ -150,6 +155,9 @@ that support markdown, appends a summary to the GitHub step summary. For `review
 - `sbom`: export a CycloneDX JSON SBOM for the local npm snapshot
 - `policy init`: create a sample `npm-protect.yml`
 - `policy validate`: validate `npm-protect.yml` or use defaults
+- `policy approve-install-script`: create a reviewed install-script approval, optionally with expiry
+- `policy list-approvals`: list active and expired stored approvals
+- `policy revoke-install-script`: remove a stored install-script approval
 
 ## Output Formats
 
@@ -181,6 +189,7 @@ Install the shim with:
 ```bash
 node ./bin/npm-protect.js service install
 node ./bin/npm-protect.js service status
+node ./bin/npm-protect.js service doctor
 npm run service:install
 npm run service:status
 ```
@@ -215,6 +224,10 @@ lockfile-accurate mediation for those ecosystems exists.
 The guard also blocks unmanaged global installs (`npm install -g`) by default, because they
 cannot be reviewed safely with the current project-based model.
 
+`service doctor` gives an operator-focused health check for wrapper installation, PATH
+ordering, and per-tool activation so you can confirm whether the always-on guard is truly
+active or being bypassed by shell configuration.
+
 ## Review Semantics
 
 `review` reports both:
@@ -239,6 +252,10 @@ dependencies and packages already marked with install-time lifecycle hooks in th
 lockfile. It scans those files for suspicious downloader, inline-eval,
 child-process, environment-access, and network-use patterns, and it can recover
 hidden lifecycle scripts that were missing from lockfile metadata.
+
+`review --inspect-tarballs=all` expands that inspection scope to every resolved registry
+package in the current lockfile. That gives wider transitive coverage at the cost of more
+network and analysis work.
 
 `install --inspect-tarballs` uses the same tarball evidence so reviewed install
 plans stay aligned with `review`. Recovered lifecycle-script packages are counted
@@ -289,6 +306,9 @@ Example:
 ```yaml
 mode: enforce
 
+approvals:
+  path: ".npm-protect/approvals.json"
+
 services:
   osv:
     enabled: true
@@ -297,6 +317,8 @@ services:
     warnPackageAgeDays: 14
   tarballs:
     enabled: true
+    selection: focused
+    maxPackages: 0
   auditSignatures:
     enabled: true
 
@@ -319,6 +341,7 @@ warnRules:
   missingVerifiedAttestations: true
   freshPackages: true
   suspiciousTarballIndicators: true
+  expiredInstallScriptApprovals: true
 ```
 
 You can also enable the default collectors without changing config:
@@ -340,6 +363,7 @@ And inspect published install-hook tarballs:
 
 ```bash
 node ./bin/npm-protect.js review --inspect-tarballs
+node ./bin/npm-protect.js review --inspect-tarballs=all
 node ./bin/npm-protect.js install --inspect-tarballs
 ```
 
@@ -347,6 +371,14 @@ And explicitly verify installed package signatures and attestations:
 
 ```bash
 node ./bin/npm-protect.js review --audit-signatures
+```
+
+And manage stored install-script approvals:
+
+```bash
+node ./bin/npm-protect.js policy approve-install-script esbuild@0.25.0 --expires-days 7 --reason "reviewed native build"
+node ./bin/npm-protect.js policy list-approvals
+node ./bin/npm-protect.js policy revoke-install-script esbuild@0.25.0
 ```
 
 ## Testing
@@ -365,6 +397,7 @@ Coverage currently includes:
 - local cache reuse across repeated review runs
 - fresh-package registry heuristics with injected time
 - tarball inspection with mocked tarball responses
+- approval-store backed install-script exceptions and service doctor output
 - tarball-backed recovery of hidden lifecycle scripts into install planning
 - npm audit signatures collection with mocked runner responses
 - git-ref diff loading with injected git object readers
@@ -381,6 +414,6 @@ Coverage currently includes:
 - full lockfile-accurate install mediation is currently implemented for npm only
 - `pnpm` and `yarn` mutating install flows are intercepted and blocked fail-closed until native support lands
 - npm provenance verification depends on `node_modules`, network access for `npm audit signatures`, and npm CLI support
-- tarball inspection currently prioritizes direct registry dependencies and packages already marked with install-time lifecycle hooks in the lockfile; it does not fetch every transitive tarball
+- tarball inspection defaults to a focused subset; `--inspect-tarballs=all` expands to every resolved registry package but increases cost
 - publisher workflow checks are text heuristics, not full YAML semantic parsing
 - SBOM dependency edges currently include root-to-direct dependencies only

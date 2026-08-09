@@ -1,12 +1,21 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import {
+  DEFAULT_APPROVAL_STORE_PATH,
+  loadInstallScriptApprovalStore,
+  mergeInstallScriptApprovals,
+  normalizeConfiguredInstallScriptApprovals,
+} from "./approvals.js";
 import { fileExists } from "./project.js";
 
 export const DEFAULT_CONFIG = {
   mode: "warn",
   trustedScopes: [],
   allowedInstallScripts: [],
+  approvals: {
+    path: DEFAULT_APPROVAL_STORE_PATH,
+  },
   services: {
     osv: {
       enabled: false,
@@ -24,6 +33,8 @@ export const DEFAULT_CONFIG = {
       timeoutMs: 10000,
       maxFilesPerPackage: 6,
       maxFileBytes: 65536,
+      selection: "focused",
+      maxPackages: 0,
     },
     auditSignatures: {
       enabled: false,
@@ -53,6 +64,7 @@ export const DEFAULT_CONFIG = {
     suspiciousTarballIndicators: true,
     auditSignaturesUnavailable: true,
     externalServiceFailures: true,
+    expiredInstallScriptApprovals: true,
   },
 };
 
@@ -64,6 +76,9 @@ trustedScopes:
 allowedInstallScripts:
   - esbuild@0.25.0
   - sharp@0.34.0
+
+approvals:
+  path: ".npm-protect/approvals.json"
 
 services:
   osv:
@@ -78,6 +93,8 @@ services:
     timeoutMs: 10000
     maxFilesPerPackage: 6
     maxFileBytes: 65536
+    selection: focused
+    maxPackages: 0
   auditSignatures:
     enabled: false
     includeAttestations: true
@@ -104,6 +121,7 @@ warnRules:
   suspiciousTarballIndicators: true
   auditSignaturesUnavailable: true
   externalServiceFailures: true
+  expiredInstallScriptApprovals: true
 `;
 
 const CONFIG_FILENAMES = [
@@ -119,11 +137,28 @@ export async function loadConfig(projectDir, explicitPath = null) {
   const source = explicitPath ? path.resolve(explicitPath) : await findConfigPath(projectDir);
 
   if (!source) {
+    const configuredApprovals = normalizeConfiguredInstallScriptApprovals(
+      DEFAULT_CONFIG.allowedInstallScripts,
+    );
+    const approvalState = await loadInstallScriptApprovalStore(
+      projectDir,
+      DEFAULT_CONFIG.approvals,
+    );
     return {
       source: null,
       rawConfig: structuredClone(DEFAULT_CONFIG),
-      config: structuredClone(DEFAULT_CONFIG),
-      validationErrors: [],
+      config: {
+        ...structuredClone(DEFAULT_CONFIG),
+        installScriptApprovals: mergeInstallScriptApprovals(
+          configuredApprovals.approvals,
+          approvalState.approvals,
+        ),
+        approvalState,
+      },
+      validationErrors: [
+        ...configuredApprovals.validationErrors,
+        ...approvalState.validationErrors,
+      ],
     };
   }
 
@@ -142,8 +177,28 @@ export async function loadConfig(projectDir, explicitPath = null) {
 
   validationErrors.push(...validateConfig(rawConfig));
   const config = mergeConfig(DEFAULT_CONFIG, rawConfig);
+  const configuredApprovals = normalizeConfiguredInstallScriptApprovals(config.allowedInstallScripts);
+  validationErrors.push(...configuredApprovals.validationErrors);
+  const approvalState = await loadInstallScriptApprovalStore(
+    projectDir,
+    config.approvals,
+  );
+  validationErrors.push(...approvalState.validationErrors);
+  const mergedApprovals = mergeInstallScriptApprovals(
+    configuredApprovals.approvals,
+    approvalState.approvals,
+  );
 
-  return { source, rawConfig, config, validationErrors };
+  return {
+    source,
+    rawConfig,
+    config: {
+      ...config,
+      installScriptApprovals: mergedApprovals,
+      approvalState,
+    },
+    validationErrors,
+  };
 }
 
 export function validateConfig(config) {
@@ -168,6 +223,10 @@ export function validateConfig(config) {
     errors.push("allowedInstallScripts must be an array");
   }
 
+  if (config.approvals !== undefined && !isPlainObject(config.approvals)) {
+    errors.push("approvals must be an object");
+  }
+
   if (config.blockRules !== undefined && !isPlainObject(config.blockRules)) {
     errors.push("blockRules must be an object");
   }
@@ -178,6 +237,13 @@ export function validateConfig(config) {
 
   if (config.services !== undefined && !isPlainObject(config.services)) {
     errors.push("services must be an object");
+  }
+
+  if (
+    config.approvals?.path !== undefined &&
+    (typeof config.approvals.path !== "string" || config.approvals.path.trim().length === 0)
+  ) {
+    errors.push("approvals.path must be a non-empty string");
   }
 
   const threshold = config.blockRules?.typosquatScoreThreshold;
@@ -259,6 +325,22 @@ export function validateConfig(config) {
     (!Number.isInteger(maxFileBytes) || maxFileBytes <= 0)
   ) {
     errors.push("services.tarballs.maxFileBytes must be a positive integer");
+  }
+
+  const tarballSelection = config.services?.tarballs?.selection;
+  if (
+    tarballSelection !== undefined &&
+    !["focused", "all"].includes(tarballSelection)
+  ) {
+    errors.push('services.tarballs.selection must be either "focused" or "all"');
+  }
+
+  const tarballMaxPackages = config.services?.tarballs?.maxPackages;
+  if (
+    tarballMaxPackages !== undefined &&
+    (!Number.isInteger(tarballMaxPackages) || tarballMaxPackages < 0)
+  ) {
+    errors.push("services.tarballs.maxPackages must be a non-negative integer");
   }
 
   return errors;
@@ -432,6 +514,10 @@ function mergeConfig(defaults, config) {
     allowedInstallScripts: Array.isArray(config.allowedInstallScripts)
       ? [...config.allowedInstallScripts]
       : [...defaults.allowedInstallScripts],
+    approvals: {
+      ...defaults.approvals,
+      ...(isPlainObject(config.approvals) ? config.approvals : {}),
+    },
     services: {
       osv: {
         ...defaults.services.osv,

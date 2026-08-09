@@ -315,6 +315,42 @@ test("runCli service install emits JSON metadata for wrapper installation", asyn
   }
 });
 
+test("runCli service doctor reports PATH and wrapper issues", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "npm-protect-service-doctor-"));
+  const binDir = path.join(tempDir, "bin");
+
+  try {
+    const { output, exitCode } = await captureRun(async () => {
+      await runCli([
+        "service",
+        "doctor",
+        "--bin-dir",
+        binDir,
+        "--json",
+      ], {
+        pathValue: "/usr/bin",
+        currentExecutablePaths: {
+          npm: "/usr/bin/npm",
+          npx: "/usr/bin/npx",
+          pnpm: "/usr/bin/pnpm",
+          pnpx: "/usr/bin/pnpx",
+          yarn: "/usr/bin/yarn",
+          yarnpkg: "/usr/bin/yarnpkg",
+        },
+      });
+    });
+
+    const result = JSON.parse(output);
+    assert.equal(result.status.pathActive, false);
+    assert.ok(result.issues.some((issue) => issue.code === "missing_primary_wrapper"));
+    assert.ok(result.issues.some((issue) => issue.code === "path_not_active"));
+    assert.ok(result.recommendations.some((entry) => /service install/u.test(entry)));
+    assert.equal(exitCode, undefined);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 async function captureRun(fn) {
   const originalLog = console.log;
   const originalError = console.error;

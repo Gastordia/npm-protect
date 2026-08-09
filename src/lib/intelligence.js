@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { isInstallScriptPackageApproved } from "./approvals.js";
 import { buildCacheKey, readCache, resolveCacheSettings, writeCache } from "./cache.js";
 import { fileExists } from "./project.js";
 import { inspectPackageTarball } from "./tarball-analysis.js";
@@ -246,6 +247,11 @@ function resolveCollectorSettings(config, flags) {
       timeoutMs: Number(config.services?.tarballs?.timeoutMs ?? 10000),
       maxFilesPerPackage: Number(config.services?.tarballs?.maxFilesPerPackage ?? 6),
       maxFileBytes: Number(config.services?.tarballs?.maxFileBytes ?? 65536),
+      selection: resolveTarballSelection(
+        flags["inspect-tarballs"],
+        config.services?.tarballs?.selection,
+      ),
+      maxPackages: Number(config.services?.tarballs?.maxPackages ?? 0),
     },
     auditSignatures: {
       enabled: auditSignaturesEnabled,
@@ -578,7 +584,7 @@ async function collectRegistryMetadata(project, config, settings, fetchImpl, now
 async function collectTarballIntelligence(project, config, settings, fetchImpl, cache = null) {
   const packages = dedupePackages(
     (project.lockfile?.packages ?? [])
-      .filter(shouldInspectTarballPackage)
+      .filter((pkg) => shouldInspectTarballPackage(pkg, settings.selection))
       .filter((pkg) => typeof pkg.version === "string" && pkg.version !== "unknown")
       .filter((pkg) => typeof pkg.resolved === "string" && /^https?:\/\//u.test(pkg.resolved))
       .map((pkg) => ({
@@ -590,6 +596,10 @@ async function collectTarballIntelligence(project, config, settings, fetchImpl, 
         isDirectDependency: Boolean(pkg.isDirectDependency),
       })),
   );
+  const selectedPackages =
+    Number(settings.maxPackages ?? 0) > 0
+      ? packages.slice(0, Number(settings.maxPackages))
+      : packages;
 
   const findings = [];
   let inspectedPackages = 0;
@@ -600,7 +610,7 @@ async function collectTarballIntelligence(project, config, settings, fetchImpl, 
   let cacheHits = 0;
   let cacheWrites = 0;
 
-  for (const pkg of packages) {
+  for (const pkg of selectedPackages) {
     try {
       const tarballResponse = await fetchBuffer(
         pkg.resolved,
@@ -627,7 +637,7 @@ async function collectTarballIntelligence(project, config, settings, fetchImpl, 
           scriptNames: lifecycleScripts,
         });
 
-        if (!isApprovedInstallScriptPackage(config.allowedInstallScripts, pkg)) {
+        if (!isInstallScriptPackageApproved(config, pkg.name, pkg.version)) {
           findings.push({
             severity: config.blockRules.unreviewedInstallScripts ? "error" : "warn",
             code: "tarball_declares_lifecycle_script",
@@ -670,6 +680,7 @@ async function collectTarballIntelligence(project, config, settings, fetchImpl, 
   return {
     findings,
     stats: {
+      selectedPackages: selectedPackages.length,
       inspectedPackages,
       recoveredLifecycleScriptPackages,
       suspiciousPackages,
@@ -1001,13 +1012,21 @@ function dedupePackages(packages) {
   return deduped;
 }
 
-function shouldInspectTarballPackage(pkg) {
+function shouldInspectTarballPackage(pkg, selection = "focused") {
+  if (selection === "all") {
+    return true;
+  }
+
   return Boolean(pkg.hasInstallScript) || Boolean(pkg.isDirectDependency);
 }
 
-function isApprovedInstallScriptPackage(approvedEntries, pkg) {
-  const exact = `${pkg.name}@${pkg.version}`;
-  return approvedEntries.includes(pkg.name) || approvedEntries.includes(exact);
+function resolveTarballSelection(flagValue, configuredSelection) {
+  const candidate =
+    typeof flagValue === "string" && flagValue.length > 0
+      ? flagValue
+      : configuredSelection ?? "focused";
+
+  return candidate === "all" ? "all" : "focused";
 }
 
 function chunkArray(values, size) {

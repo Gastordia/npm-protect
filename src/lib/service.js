@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { buildApprovalCommand } from "./approvals.js";
 import { loadConfig } from "./config.js";
 import { collectExternalIntelligence } from "./intelligence.js";
 import { buildInstallPlan } from "./install-plan.js";
@@ -227,7 +228,7 @@ export async function runProtectedPackageManagerCommand(toolName, argv, options 
     }
 
     if (review.report?.riskVerdict === "block") {
-      printBlockingFindings(review.report, "one-off package execution");
+      printBlockingFindings(review.report, "one-off package execution", cwd);
       return {
         exitCode: 2,
         blocked: true,
@@ -321,7 +322,7 @@ async function runProtectedNpmInstall(
 
     if (report.riskVerdict === "block") {
       await restoreProjectFiles(projectDir, snapshots);
-      printBlockingFindings(report, "install");
+      printBlockingFindings(report, "install", projectDir);
       return {
         exitCode: 2,
         blocked: true,
@@ -885,11 +886,36 @@ async function restoreProjectFiles(projectDir, snapshots) {
   }
 }
 
-function printBlockingFindings(report, actionLabel) {
+function printBlockingFindings(report, actionLabel, projectDir = null) {
   console.error(`npm-protect blocked this ${actionLabel} because the requested dependency state is unsafe:`);
 
   for (const finding of report.findings.filter((finding) => finding.severity === "error")) {
     console.error(`- ${finding.code}: ${finding.message}`);
+  }
+
+  const approvalSuggestions = new Map();
+  for (const finding of report.findings) {
+    if (!["unreviewed_install_script", "tarball_declares_lifecycle_script"].includes(finding.code)) {
+      continue;
+    }
+
+    if (!finding.packageName || !finding.packageVersion) {
+      continue;
+    }
+
+    const command = buildApprovalCommand(finding.packageName, finding.packageVersion, {
+      projectDir,
+      expiresDays: 7,
+    });
+    approvalSuggestions.set(`${finding.packageName}@${finding.packageVersion}`, command);
+  }
+
+  if (approvalSuggestions.size > 0) {
+    console.error("");
+    console.error("Suggested review approval commands:");
+    for (const [label, command] of approvalSuggestions.entries()) {
+      console.error(`- ${label}: ${command}`);
+    }
   }
 }
 

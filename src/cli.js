@@ -27,7 +27,7 @@ Common options:
   --project <dir>  Project directory to inspect
   --config <path>  Explicit config path
   --online         Enable default external intelligence collectors
-  --inspect-tarballs Fetch and inspect published tarballs for suspicious lifecycle behavior
+  --inspect-tarballs[=all] Fetch and inspect published tarballs; use "=all" to inspect all resolved registry packages
   --audit-signatures Run npm audit signatures for verified signatures and attestations
   --cache-dir <dir> Cache remote lookup responses in a local directory
   --cache-ttl-hours <n> Reuse cached remote responses for this many hours (default 24)

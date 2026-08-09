@@ -139,6 +139,10 @@ function formatReviewText(report) {
   for (const finding of report.findings) {
     const prefix = finding.severity.toUpperCase().padEnd(5, " ");
     lines.push(`- ${prefix} ${finding.code}: ${finding.message}`);
+    const context = formatFindingContext(finding);
+    if (context) {
+      lines.push(`        ${context}`);
+    }
   }
 
   return lines.join("\n");
@@ -236,6 +240,9 @@ function formatInstallText(plan) {
     lines.push("", "Approved install-script packages:");
     for (const pkg of plan.approved) {
       lines.push(`- ${formatInstallPackageLabel(pkg)}`);
+      if (pkg.approvalCommand) {
+        lines.push(`  approval: ${pkg.approvalCommand}`);
+      }
     }
   }
 
@@ -243,6 +250,9 @@ function formatInstallText(plan) {
     lines.push("", "Unapproved install-script packages:");
     for (const pkg of plan.unapproved) {
       lines.push(`- ${formatInstallPackageLabel(pkg)}`);
+      if (pkg.approvalCommand) {
+        lines.push(`  approval: ${pkg.approvalCommand}`);
+      }
     }
   }
 
@@ -357,14 +367,20 @@ function formatReviewMarkdown(report) {
     return lines.join("\n");
   }
 
-  lines.push("", "## Findings", "", "| Severity | Code | Package | Message |", "| --- | --- | --- | --- |");
+  lines.push(
+    "",
+    "## Findings",
+    "",
+    "| Severity | Code | Package | Path | Evidence | Message |",
+    "| --- | --- | --- | --- | --- | --- |",
+  );
   for (const finding of report.findings) {
     const pkg =
       finding.packageName && finding.packageVersion
         ? `${finding.packageName}@${finding.packageVersion}`
         : finding.packageName ?? "";
     lines.push(
-      `| ${escapeMarkdownCell(finding.severity)} | ${escapeMarkdownCell(finding.code)} | ${escapeMarkdownCell(pkg)} | ${escapeMarkdownCell(finding.message)} |`,
+      `| ${escapeMarkdownCell(finding.severity)} | ${escapeMarkdownCell(finding.code)} | ${escapeMarkdownCell(pkg)} | ${escapeMarkdownCell(finding.packagePath ?? "")} | ${escapeMarkdownCell(formatFindingEvidence(finding))} | ${escapeMarkdownCell(finding.message)} |`,
     );
   }
 
@@ -755,13 +771,13 @@ function escapeMarkdownCell(value) {
 
 function renderInstallPackageTable(packages) {
   const lines = [
-    "| Package | Path | Source | Scripts |",
-    "| --- | --- | --- | --- |",
+    "| Package | Path | Source | Scripts | Approval Command |",
+    "| --- | --- | --- | --- | --- |",
   ];
 
   for (const pkg of packages) {
     lines.push(
-      `| ${escapeMarkdownCell(`${pkg.name}@${pkg.version}`)} | ${escapeMarkdownCell(pkg.path)} | ${escapeMarkdownCell(pkg.source)} | ${escapeMarkdownCell(formatInstallScripts(pkg.scriptNames))} |`,
+      `| ${escapeMarkdownCell(`${pkg.name}@${pkg.version}`)} | ${escapeMarkdownCell(pkg.path)} | ${escapeMarkdownCell(pkg.source)} | ${escapeMarkdownCell(formatInstallScripts(pkg.scriptNames))} | ${escapeMarkdownCell(pkg.approvalCommand ?? "")} |`,
     );
   }
 
@@ -789,4 +805,80 @@ function formatInstallScripts(scriptNames) {
   }
 
   return scriptNames.join(", ");
+}
+
+function formatFindingContext(finding) {
+  const parts = [];
+
+  if (finding.packageName) {
+    parts.push(
+      `package=${finding.packageVersion ? `${finding.packageName}@${finding.packageVersion}` : finding.packageName}`,
+    );
+  }
+
+  if (finding.packagePath) {
+    parts.push(`path=${finding.packagePath}`);
+  }
+
+  const evidence = formatFindingEvidence(finding);
+  if (evidence) {
+    parts.push(`evidence=${evidence}`);
+  }
+
+  return parts.join("; ");
+}
+
+function formatFindingEvidence(finding) {
+  const details = finding.details ?? {};
+  const parts = [];
+
+  if (details.target) {
+    parts.push(`target=${details.target}`);
+  }
+
+  if (details.score !== undefined) {
+    parts.push(`score=${Number(details.score).toFixed(2)}`);
+  }
+
+  if (details.spec) {
+    parts.push(`spec=${details.spec}`);
+  }
+
+  if (details.scriptName) {
+    parts.push(`script=${details.scriptName}`);
+  }
+
+  if (Array.isArray(details.scriptNames) && details.scriptNames.length > 0) {
+    parts.push(`scripts=${details.scriptNames.join(",")}`);
+  }
+
+  if (details.indicator) {
+    parts.push(`indicator=${details.indicator}`);
+  }
+
+  if (details.publishedAt) {
+    parts.push(`publishedAt=${details.publishedAt}`);
+  }
+
+  if (details.source) {
+    parts.push(`source=${details.source}`);
+  }
+
+  if (details.tarballUrl) {
+    parts.push(`tarball=${details.tarballUrl}`);
+  }
+
+  if (details.lockfileIntegrity) {
+    parts.push(`lockfileIntegrity=${details.lockfileIntegrity}`);
+  }
+
+  if (details.registryIntegrity) {
+    parts.push(`registryIntegrity=${details.registryIntegrity}`);
+  }
+
+  if (details.expiredAt) {
+    parts.push(`expiredAt=${details.expiredAt}`);
+  }
+
+  return parts.join(", ");
 }

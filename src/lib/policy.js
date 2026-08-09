@@ -1,4 +1,5 @@
 import { POPULAR_PACKAGES } from "../data/popular-packages.js";
+import { isInstallScriptPackageApproved } from "./approvals.js";
 import { analyzeTyposquats } from "./typosquat.js";
 
 export function evaluateProject(project, config, validationErrors = []) {
@@ -66,6 +67,22 @@ export function evaluateProjectWithIntelligence(project, config, options = {}) {
     });
   }
 
+  if (config.warnRules.expiredInstallScriptApprovals) {
+    for (const approval of config.approvalState?.expiredApprovals ?? []) {
+      findings.push({
+        severity: "warn",
+        code: "expired_install_script_approval",
+        message: `${approval.name}${approval.version ? `@${approval.version}` : ""} has an expired install-script approval`,
+        packageName: approval.name,
+        packageVersion: approval.version,
+        details: {
+          expiredAt: approval.expiresAt ? approval.expiresAt.toISOString() : null,
+          source: approval.source,
+        },
+      });
+    }
+  }
+
   for (const dependency of directDependencies) {
     if (!dependency.isRegistryDependency) {
       findings.push({
@@ -82,7 +99,7 @@ export function evaluateProjectWithIntelligence(project, config, options = {}) {
   }
 
   for (const pkg of packages) {
-    if (pkg.hasInstallScript && !isApproved(config.allowedInstallScripts, pkg)) {
+    if (pkg.hasInstallScript && !isInstallScriptPackageApproved(config, pkg.name, pkg.version)) {
       findings.push({
         severity: config.blockRules.unreviewedInstallScripts ? "error" : "warn",
         code: "unreviewed_install_script",
@@ -171,9 +188,4 @@ export function evaluateProjectWithIntelligence(project, config, options = {}) {
     riskVerdict,
     verdict: enforcementVerdict,
   };
-}
-
-function isApproved(approvedEntries, pkg) {
-  const exact = `${pkg.name}@${pkg.version}`;
-  return approvedEntries.includes(pkg.name) || approvedEntries.includes(exact);
 }

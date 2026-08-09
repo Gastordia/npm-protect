@@ -1,3 +1,7 @@
+import {
+  buildApprovalCommand,
+  isInstallScriptPackageApproved,
+} from "./approvals.js";
 import { collectExternalIntelligence } from "./intelligence.js";
 
 export async function buildInstallPlan(project, config, options = {}) {
@@ -9,11 +13,9 @@ export async function buildInstallPlan(project, config, options = {}) {
     options.recoveredPackages?.map(normalizeRecoveredLifecycleScriptPackage) ??
     (await collectRecoveredLifecycleScriptPackages(project, config, flags, options));
   const packagesWithScripts = mergeInstallScriptPackages(localPackages, recoveredPackages);
-  const approved = packagesWithScripts.filter((pkg) =>
-    isApprovedInstallScriptPackage(config.allowedInstallScripts, pkg.name, pkg.version),
-  );
+  const approved = packagesWithScripts.filter((pkg) => isInstallScriptPackageApproved(config, pkg.name, pkg.version));
   const unapproved = packagesWithScripts.filter(
-    (pkg) => !isApprovedInstallScriptPackage(config.allowedInstallScripts, pkg.name, pkg.version),
+    (pkg) => !isInstallScriptPackageApproved(config, pkg.name, pkg.version),
   );
 
   return {
@@ -31,7 +33,7 @@ export async function buildInstallPlan(project, config, options = {}) {
       unapprovedPackages: unapproved.length,
     },
     approved: approved.map(serializePlanPackage),
-    unapproved: unapproved.map(serializePlanPackage),
+    unapproved: unapproved.map((pkg) => serializePlanPackage(pkg, project.dir)),
   };
 }
 
@@ -136,12 +138,21 @@ function mergeInstallScriptPackages(localPackages, recoveredPackages) {
   return merged;
 }
 
-function serializePlanPackage(pkg) {
+function serializePlanPackage(pkg, projectDir = null) {
   return {
     name: pkg.name,
     version: pkg.version,
     path: pkg.path,
     source: pkg.source,
     scriptNames: pkg.scriptNames,
+    approvalCommand:
+      pkg.source === "tarball" || projectDir
+        ? buildApprovalCommand(pkg.name, pkg.version, {
+            projectDir,
+            expiresDays: 7,
+          })
+        : buildApprovalCommand(pkg.name, pkg.version, {
+            expiresDays: 7,
+          }),
   };
 }

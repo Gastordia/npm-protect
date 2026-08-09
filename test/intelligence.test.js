@@ -351,6 +351,94 @@ test("collectExternalIntelligence recovers lifecycle scripts from tarballs when 
   );
 });
 
+test("collectExternalIntelligence can inspect all registry packages when tarball selection is all", async () => {
+  const project = {
+    dir: "/tmp/npm-protect-selection-all",
+    directDependencies: [
+      {
+        name: "esbuild",
+        spec: "0.25.0",
+        field: "dependencies",
+        isRegistryDependency: true,
+      },
+    ],
+    lockfile: {
+      packages: [
+        {
+          name: "esbuild",
+          version: "0.25.0",
+          path: "node_modules/esbuild",
+          resolved: "https://registry.npmjs.org/esbuild/-/esbuild-0.25.0.tgz",
+          integrity: "sha512-esbuild",
+          hasInstallScript: true,
+          isDirectDependency: true,
+        },
+        {
+          name: "helper-lib",
+          version: "1.0.0",
+          path: "node_modules/helper-lib",
+          resolved: "https://registry.npmjs.org/helper-lib/-/helper-lib-1.0.0.tgz",
+          integrity: "sha512-helper",
+          hasInstallScript: false,
+          isDirectDependency: false,
+        },
+      ],
+    },
+  };
+  const config = {
+    ...DEFAULT_CONFIG,
+    services: {
+      ...DEFAULT_CONFIG.services,
+      tarballs: {
+        enabled: true,
+        timeoutMs: 2000,
+        maxFilesPerPackage: 2,
+        maxFileBytes: 65536,
+        selection: "all",
+      },
+    },
+  };
+  const requests = [];
+
+  const intelligence = await collectExternalIntelligence(project, config, {
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+
+      if (String(url) === "https://registry.npmjs.org/esbuild/-/esbuild-0.25.0.tgz") {
+        return bufferResponse(
+          createTarball({
+            "package/package.json": JSON.stringify({
+              name: "esbuild",
+              version: "0.25.0",
+              scripts: {
+                install: "node install.js",
+              },
+            }),
+            "package/install.js": "console.log('esbuild');",
+          }),
+        );
+      }
+
+      if (String(url) === "https://registry.npmjs.org/helper-lib/-/helper-lib-1.0.0.tgz") {
+        return bufferResponse(
+          createTarball({
+            "package/package.json": JSON.stringify({
+              name: "helper-lib",
+              version: "1.0.0",
+            }),
+          }),
+        );
+      }
+
+      return jsonResponse({ error: "not found" }, { status: 404 });
+    },
+  });
+
+  assert.equal(intelligence.stats.tarballsInspected, 2);
+  assert.ok(requests.includes("https://registry.npmjs.org/esbuild/-/esbuild-0.25.0.tgz"));
+  assert.ok(requests.includes("https://registry.npmjs.org/helper-lib/-/helper-lib-1.0.0.tgz"));
+});
+
 test("collectExternalIntelligence reuses cached registry and tarball responses", async () => {
   const project = await loadProjectSnapshot(path.join(fixturesDir, "block-project"));
   const cacheDir = await mkdtemp(path.join(os.tmpdir(), "npm-protect-cache-"));
